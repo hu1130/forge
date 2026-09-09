@@ -4,7 +4,7 @@ import path from "node:path";
 import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import Fastify, { type FastifyReply } from "fastify";
-import type { Activity, ApprovalRequest, BootstrapPayload, ExtensionPayload, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, ExtensionPayload, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
 import { applyTaskChanges, type ChangeAction } from "./change-manager.js";
 import { CodexBridge, type RpcMessage } from "./codex-bridge.js";
 import { deepSeekAppServerArgs, deepSeekSettings } from "./deepseek.js";
@@ -41,6 +41,10 @@ const terminals = new TerminalManager(workspacePath);
 interface RunningTurn {
   stopped: boolean;
   turnId: string;
+  providerId: "demo" | "deepseek";
+  threadId?: string;
+  steerReady?: boolean;
+  emit: (event: TaskStreamEvent) => void;
   interrupt?: () => Promise<void>;
 }
 
@@ -58,10 +62,15 @@ interface AppServerTurnStart {
   turn?: { id?: string };
 }
 
+interface AppServerQueueAdd {
+  queuedSubmission?: { id?: string; clientUserMessageId?: string };
+}
+
 type JsonRecord = Record<string, unknown>;
 
 const runningTurns = new Map<string, RunningTurn>();
 const pendingApprovals = new Map<string, PendingApproval>();
+const MAX_QUEUED_TURNS = 20;
 const now = () => new Date().toISOString();
 const isRecord = (value: unknown): value is JsonRecord => typeof value === "object" && value !== null;
 
@@ -88,6 +97,32 @@ async function startRuntime() {
 async function restartRuntime() {
   await bridge.restart(runtimeArgs());
   await applySkillRoots();
+}
+
+async function loadedDeepSeekThread(task: ForgeTask) {
+  const running = runningTurns.get(task.id);
+  if (running?.providerId === "deepseek") {
+    if (!running.threadId) throw new Error("模型会话正在启动，请稍候再操作队列");
+    return running.threadId;
+  }
+  const session = task.agentSession;
+  const taskWorkspacePath = task.workspacePath || workspacePath;
+  if (!session || session.providerId !== "deepseek") throw new Error("这个任务还没有可恢复的 DeepSeek 会话");
+  if (session.model !== deepSeek.model || session.cwd !== taskWorkspacePath) {
+    throw new Error("当前任务绑定的模型或工作区已经改变，Forge 未自动迁移队列");
+  }
+  await startRuntime();
+  const resumed = await bridge.request("thread/resume", {
+    threadId: session.threadId,
+    model: deepSeek.model,
+    modelProvider: "deepseek",
+    cwd: taskWorkspacePath,
+    approvalPolicy: "untrusted",
+    approvalsReviewer: "user",
+    sandbox: "workspace-write",
+    excludeTurns: true,
+  }, 20_000) as AppServerThreadStart;
+  return resumed.thread?.id || session.threadId;
 }
 
 function normalizedFilePath(value: string) {
@@ -347,18 +382,21 @@ function cancelTaskApprovals(taskId: string) {
   }
 }
 
-async function runDemoTurn(taskId: string, userActivity: Activity, reply: FastifyReply) {
-  const send = beginEventStream(reply);
-  const turnId = randomUUID();
-  const controller: RunningTurn = { stopped: false, turnId };
-  runningTurns.set(taskId, controller);
-  const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+function queuedUserActivity(queuedTurn: QueuedTurn): Activity {
+  return {
+    id: queuedTurn.clientUserMessageId,
+    kind: "message",
+    role: "user",
+    text: queuedTurn.text,
+    contextFiles: queuedTurn.contextFiles,
+    delivery: "turn",
+    at: now(),
+  };
+}
 
-  send({ type: "turn", turnId, state: "started" });
-  send({ type: "activity", activity: userActivity });
-
+function demoActivities(): Activity[] {
   const commandId = randomUUID();
-  const demoActivities: Activity[] = [
+  return [
     {
       id: randomUUID(),
       kind: "message",
@@ -392,56 +430,105 @@ async function runDemoTurn(taskId: string, userActivity: Activity, reply: Fastif
       at: now(),
     },
   ];
+}
+
+async function runDemoTurn(taskId: string, userActivity: Activity | undefined, reply: FastifyReply, initialQueue?: QueuedTurn[]) {
+  const send = beginEventStream(reply);
+  const controller: RunningTurn = { stopped: false, turnId: randomUUID(), providerId: "demo", emit: send };
+  runningTurns.set(taskId, controller);
+  const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  if (initialQueue) send({ type: "queue", items: initialQueue });
 
   try {
-    for (const activity of demoActivities) {
-      await delay(520);
-      if (controller.stopped) break;
-      await store.addActivity(taskId, activity);
-      send({ type: "activity", activity });
+    let nextActivity = userActivity;
+    while (nextActivity) {
+      controller.turnId = randomUUID();
+      await store.setState(taskId, "running");
+      send({ type: "turn", turnId: controller.turnId, state: "started" });
+      send({ type: "activity", activity: nextActivity });
+
+      for (const activity of demoActivities()) {
+        await delay(520);
+        if (controller.stopped) break;
+        await store.addActivity(taskId, activity);
+        send({ type: "activity", activity });
+      }
+      const state = controller.stopped ? "stopped" : "completed";
+      send({ type: "turn", turnId: controller.turnId, state });
+      if (controller.stopped) {
+        await store.setState(taskId, "stopped");
+        break;
+      }
+
+      const queuedTurn = store.find(taskId)?.queuedTurns?.[0];
+      if (!queuedTurn) {
+        await store.setState(taskId, "completed");
+        break;
+      }
+      if (queuedTurn.providerId !== "demo") throw new Error("演示队列包含不兼容的模型任务，Forge 未自动切换提供商");
+      const queue = await store.removeQueuedTurn(taskId, queuedTurn.id) || [];
+      send({ type: "queue", items: queue });
+      nextActivity = queuedUserActivity(queuedTurn);
+      await store.addActivity(taskId, nextActivity);
     }
-    const state = controller.stopped ? "stopped" : "completed";
-    await store.setState(taskId, state);
-    send({ type: "turn", turnId, state });
   } finally {
     runningTurns.delete(taskId);
     reply.raw.end();
   }
 }
 
-async function runDeepSeekTurn(task: ForgeTask, text: string, userActivity: Activity, reply: FastifyReply) {
+type CompletedTurnState = "completed" | "stopped" | "failed";
+
+function turnCompletion() {
+  let resolve!: (state: CompletedTurnState) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<CompletedTurnState>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject, settled: false };
+}
+
+async function runDeepSeekTurn(
+  task: ForgeTask,
+  text: string | undefined,
+  userActivity: Activity | undefined,
+  reply: FastifyReply,
+  initialQueuedTurn?: QueuedTurn,
+) {
   const taskId = task.id;
   const taskWorkspacePath = task.workspacePath || workspacePath;
   const send = beginEventStream(reply);
-  const controller: RunningTurn = { stopped: false, turnId: randomUUID() };
+  const controller: RunningTurn = { stopped: false, turnId: randomUUID(), providerId: "deepseek", emit: send };
   runningTurns.set(taskId, controller);
-  send({ type: "activity", activity: userActivity });
+  if (userActivity) send({ type: "activity", activity: userActivity });
 
   let threadId = "";
   let notificationQueue = Promise.resolve();
-  let settled = false;
-  let resolveCompletion: () => void;
-  let rejectCompletion: (error: Error) => void;
-  const completion = new Promise<void>((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
-  });
+  let completion = turnCompletion();
   const assistantText = new Map<string, string>();
   const persistedAssistantIds = new Set<string>();
   const commandOutput = new Map<string, string>();
+  const nativeStartedTurnIds = new Set<string>();
   let lastErrorMessage = "";
 
-  const finish = (error?: Error) => {
-    if (settled) return;
-    settled = true;
-    if (error) rejectCompletion(error);
-    else resolveCompletion();
+  const finish = (stateOrError: CompletedTurnState | Error) => {
+    if (completion.settled) return;
+    completion.settled = true;
+    if (stateOrError instanceof Error) completion.reject(stateOrError);
+    else completion.resolve(stateOrError);
   };
 
   const handleNotification = async (message: RpcMessage) => {
     if (!message.method || !isRecord(message.params)) return;
     const params = message.params;
     if (params.threadId !== threadId) return;
+
+    if (message.method === "turn/started" && isRecord(params.turn) && typeof params.turn.id === "string") {
+      nativeStartedTurnIds.add(params.turn.id);
+      if (params.turn.id === controller.turnId) controller.steerReady = true;
+      return;
+    }
 
     if (message.method === "turn/diff/updated" && typeof params.turnId === "string" && typeof params.diff === "string") {
       const activity = turnDiffActivity(params.turnId, params.diff);
@@ -499,12 +586,12 @@ async function runDeepSeekTurn(task: ForgeTask, text: string, userActivity: Acti
     }
 
     if (message.method === "turn/completed" && isRecord(params.turn)) {
+      controller.steerReady = false;
       for (const [itemId, accumulated] of assistantText) {
         if (!accumulated || persistedAssistantIds.has(itemId)) continue;
         await store.addActivity(taskId, { id: itemId, kind: "message", role: "assistant", text: accumulated, at: now() });
       }
       const state = controller.stopped ? "stopped" : turnState(params.turn.status);
-      await store.setState(taskId, state);
       if (state === "failed") {
         const rawMessage = isRecord(params.turn.error) && typeof params.turn.error.message === "string"
           ? params.turn.error.message
@@ -515,8 +602,7 @@ async function runDeepSeekTurn(task: ForgeTask, text: string, userActivity: Acti
         send({ type: "activity", activity: notice });
         if (message !== lastErrorMessage) send({ type: "error", message });
       }
-      send({ type: "turn", turnId: controller.turnId, state });
-      finish();
+      finish(state);
     }
   };
 
@@ -598,6 +684,7 @@ async function runDeepSeekTurn(task: ForgeTask, text: string, userActivity: Acti
       }
     }
     if (!threadId) throw new Error("DeepSeek App Server 未返回 threadId");
+    controller.threadId = threadId;
 
     if (controller.stopped) {
       await store.setState(taskId, "stopped");
@@ -605,22 +692,66 @@ async function runDeepSeekTurn(task: ForgeTask, text: string, userActivity: Acti
       return;
     }
 
-    const turnStart = await bridge.request("turn/start", {
-      threadId,
-      input: [{ type: "text", text, text_elements: [] }],
-      cwd: taskWorkspacePath,
-      approvalPolicy: "untrusted",
-      approvalsReviewer: "user",
-    }) as AppServerTurnStart;
+    let turnStart: AppServerTurnStart;
+    if (initialQueuedTurn) {
+      turnStart = await bridge.request("thread/queue/start", {
+        threadId,
+        queuedSubmissionId: initialQueuedTurn.id,
+      }, 20_000) as AppServerTurnStart;
+      const queue = await store.removeQueuedTurn(taskId, initialQueuedTurn.id) || [];
+      const activity = queuedUserActivity(initialQueuedTurn);
+      await store.addActivity(taskId, activity);
+      send({ type: "queue", items: queue });
+      send({ type: "activity", activity });
+    } else {
+      if (!text) throw new Error("缺少要执行的任务内容");
+      turnStart = await bridge.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text, text_elements: [] }],
+        cwd: taskWorkspacePath,
+        approvalPolicy: "untrusted",
+        approvalsReviewer: "user",
+      }) as AppServerTurnStart;
+    }
     controller.turnId = turnStart.turn?.id || controller.turnId;
+    controller.steerReady = nativeStartedTurnIds.has(controller.turnId);
     controller.interrupt = async () => {
       await bridge.request("turn/interrupt", { threadId, turnId: controller.turnId });
     };
     send({ type: "turn", turnId: controller.turnId, state: "started" });
 
-    if (controller.stopped) await controller.interrupt();
-    await completion;
-    await notificationQueue;
+    while (true) {
+      if (controller.stopped) await controller.interrupt();
+      const state = await completion.promise;
+      await notificationQueue;
+      send({ type: "turn", turnId: controller.turnId, state });
+      if (controller.stopped || state !== "completed") {
+        await store.setState(taskId, controller.stopped ? "stopped" : state);
+        break;
+      }
+
+      const queuedTurn = store.find(taskId)?.queuedTurns?.[0];
+      if (!queuedTurn) {
+        await store.setState(taskId, "completed");
+        break;
+      }
+      if (queuedTurn.providerId !== "deepseek") throw new Error("DeepSeek 队列包含不兼容的模型任务，Forge 未自动切换提供商");
+
+      completion = turnCompletion();
+      lastErrorMessage = "";
+      const queuedStart = await bridge.request("thread/queue/start", {
+        threadId,
+        queuedSubmissionId: queuedTurn.id,
+      }, 20_000) as AppServerTurnStart;
+      controller.turnId = queuedStart.turn?.id || randomUUID();
+      controller.steerReady = nativeStartedTurnIds.has(controller.turnId);
+      const queue = await store.removeQueuedTurn(taskId, queuedTurn.id) || [];
+      const activity = queuedUserActivity(queuedTurn);
+      await store.addActivity(taskId, activity);
+      send({ type: "queue", items: queue });
+      send({ type: "activity", activity });
+      send({ type: "turn", turnId: controller.turnId, state: "started" });
+    }
   } catch (reason) {
     const rawMessage = reason instanceof Error ? reason.message : String(reason);
     const error = new Error(deepSeekErrorMessage(rawMessage));
@@ -981,6 +1112,156 @@ app.post<{ Params: { id: string; turnId: string }; Body: { action?: ChangeAction
   }
 });
 
+app.post<{ Params: { id: string }; Body: { text?: string; contextPaths?: unknown } }>("/api/tasks/:id/steer", async (request, reply) => {
+  const task = store.find(request.params.id);
+  const controller = runningTurns.get(request.params.id);
+  const text = request.body?.text?.trim();
+  if (!task) return reply.code(404).send({ message: "任务不存在" });
+  if (!controller) return reply.code(409).send({ message: "当前任务没有可补充的运行中回合" });
+  if (!text) return reply.code(400).send({ message: "请输入补充内容" });
+
+  let contextFiles: WorkspaceFileInfo[];
+  try {
+    contextFiles = await validateContextFiles(task.workspacePath || workspacePath, request.body?.contextPaths);
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+
+  const activity: Activity = {
+    id: randomUUID(),
+    kind: "message",
+    role: "user",
+    text,
+    contextFiles,
+    delivery: "steer",
+    at: now(),
+  };
+  try {
+    if (controller.providerId === "deepseek") {
+      if (!controller.threadId) return reply.code(409).send({ message: "模型会话正在启动，请稍候再补充" });
+      if (!controller.steerReady) return reply.code(409).send({ message: "当前回合正在切换，请稍候再补充" });
+      await bridge.request("turn/steer", {
+        threadId: controller.threadId,
+        clientUserMessageId: activity.id,
+        input: [{ type: "text", text: buildContextPrompt(text, contextFiles), text_elements: [] }],
+        expectedTurnId: controller.turnId,
+      }, 20_000);
+    }
+    await store.addActivity(task.id, activity);
+    controller.emit({ type: "activity", activity });
+    return { activity };
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{ Params: { id: string }; Body: { text?: string; contextPaths?: unknown } }>("/api/tasks/:id/queue", async (request, reply) => {
+  const task = store.find(request.params.id);
+  const controller = runningTurns.get(request.params.id);
+  const text = request.body?.text?.trim();
+  if (!task) return reply.code(404).send({ message: "任务不存在" });
+  if (!controller) return reply.code(409).send({ message: "只有任务运行时才能加入下一轮队列" });
+  if (!text) return reply.code(400).send({ message: "请输入要排队的任务内容" });
+  if ((task.queuedTurns?.length || 0) >= MAX_QUEUED_TURNS) return reply.code(409).send({ message: `每个任务最多保留 ${MAX_QUEUED_TURNS} 条等待指令` });
+
+  let contextFiles: WorkspaceFileInfo[];
+  try {
+    contextFiles = await validateContextFiles(task.workspacePath || workspacePath, request.body?.contextPaths);
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+
+  const clientUserMessageId = randomUUID();
+  let nativeQueueId = controller.providerId === "demo" ? randomUUID() : "";
+  try {
+    if (controller.providerId === "deepseek") {
+      if (!controller.threadId) return reply.code(409).send({ message: "模型会话正在启动，请稍候再加入队列" });
+      if (!controller.steerReady) return reply.code(409).send({ message: "当前回合正在切换，请稍候再加入队列" });
+      const nativeResult = await bridge.request("thread/queue/add", {
+        threadId: controller.threadId,
+        input: [{ type: "text", text: buildContextPrompt(text, contextFiles), text_elements: [] }],
+        clientUserMessageId,
+      }, 20_000) as AppServerQueueAdd;
+      nativeQueueId = nativeResult.queuedSubmission?.id || "";
+      if (!nativeQueueId) throw new Error("App Server 未返回队列项目 ID");
+    }
+    const queuedTurn: QueuedTurn = {
+      id: nativeQueueId,
+      clientUserMessageId,
+      providerId: controller.providerId,
+      text,
+      contextFiles,
+      createdAt: now(),
+    };
+    const items = await store.addQueuedTurn(task.id, queuedTurn) || [];
+    controller.emit({ type: "queue", items });
+    return reply.code(201).send({ items });
+  } catch (error) {
+    if (controller.providerId === "deepseek" && controller.threadId && nativeQueueId) {
+      await bridge.request("thread/queue/delete", { threadId: controller.threadId, queuedSubmissionId: nativeQueueId }).catch(() => undefined);
+    }
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete<{ Params: { id: string; queuedTurnId: string } }>("/api/tasks/:id/queue/:queuedTurnId", async (request, reply) => {
+  const task = store.find(request.params.id);
+  if (!task) return reply.code(404).send({ message: "任务不存在" });
+  const queuedTurn = task.queuedTurns?.find((item) => item.id === request.params.queuedTurnId);
+  if (!queuedTurn) return reply.code(404).send({ message: "等待任务不存在或已经开始" });
+  try {
+    if (queuedTurn.providerId === "deepseek") {
+      const threadId = await loadedDeepSeekThread(task);
+      await bridge.request("thread/queue/delete", { threadId, queuedSubmissionId: queuedTurn.id }, 20_000);
+    }
+    const items = await store.removeQueuedTurn(task.id, queuedTurn.id) || [];
+    runningTurns.get(task.id)?.emit({ type: "queue", items });
+    return { items };
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{ Params: { id: string }; Body: { queuedTurnIds?: unknown } }>("/api/tasks/:id/queue/reorder", async (request, reply) => {
+  const task = store.find(request.params.id);
+  if (!task) return reply.code(404).send({ message: "任务不存在" });
+  const ids = request.body?.queuedTurnIds;
+  const current = task.queuedTurns || [];
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string") || ids.length !== current.length || new Set(ids).size !== current.length || ids.some((id) => !current.some((item) => item.id === id))) {
+    return reply.code(409).send({ message: "队列顺序与当前任务不一致，请刷新后重试" });
+  }
+  try {
+    if (current[0]?.providerId === "deepseek") {
+      const threadId = await loadedDeepSeekThread(task);
+      await bridge.request("thread/queue/reorder", { threadId, queuedSubmissionIds: ids as string[] }, 20_000);
+    }
+    const items = await store.reorderQueuedTurns(task.id, ids as string[]) || [];
+    runningTurns.get(task.id)?.emit({ type: "queue", items });
+    return { items };
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{ Params: { id: string } }>("/api/tasks/:id/queue/start", async (request, reply) => {
+  const task = store.find(request.params.id);
+  if (!task) return reply.code(404).send({ message: "任务不存在" });
+  if (runningTurns.has(task.id)) return reply.code(409).send({ message: "当前任务已经在运行" });
+  const queuedTurn = task.queuedTurns?.[0];
+  if (!queuedTurn) return reply.code(409).send({ message: "当前没有等待执行的任务" });
+  if (queuedTurn.providerId === "deepseek" && !deepSeek.configured) {
+    return reply.code(409).send({ message: "DeepSeek 尚未配置，队列已保留且未自动降级" });
+  }
+  await store.setState(task.id, "running");
+  if (queuedTurn.providerId === "deepseek") await runDeepSeekTurn(task, undefined, undefined, reply, queuedTurn);
+  else {
+    const items = await store.removeQueuedTurn(task.id, queuedTurn.id) || [];
+    const activity = queuedUserActivity(queuedTurn);
+    await store.addActivity(task.id, activity);
+    await runDemoTurn(task.id, activity, reply, items);
+  }
+});
+
 app.post<{ Params: { id: string }; Body: { text?: string; providerId?: string; contextPaths?: unknown } }>(
   "/api/tasks/:id/turns",
   async (request, reply) => {
@@ -1094,7 +1375,9 @@ app.addHook("onClose", async () => {
 });
 
 await app.listen({ host, port });
-void startRuntime().catch(() => undefined);
+if (process.env.FORGE_SKIP_RUNTIME_PREWARM !== "1") {
+  void startRuntime().catch(() => undefined);
+}
 console.log(`Forge Daemon: http://${host}:${port}`);
 
 const shutdown = async () => {

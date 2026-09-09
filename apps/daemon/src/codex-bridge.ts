@@ -83,6 +83,10 @@ export class CodexBridge extends EventEmitter {
 
       await this.request("initialize", {
         clientInfo: { name: "forge_local", title: "Forge", version: "0.2.0" },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+        },
       });
       this.notify("initialized", {});
       this.phase = "ready";

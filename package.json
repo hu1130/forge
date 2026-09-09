@@ -1,6 +1,6 @@
 {
   "name": "local-codex-like",
-  "version": "0.0.0",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -11,6 +11,7 @@
     "dist:win": "pnpm --filter @forge/desktop dist",
     "typecheck": "pnpm -r --if-present typecheck",
     "p0:probe": "node ./spikes/app-server/handshake.mjs",
+    "queue:probe": "pnpm --filter @forge/daemon build && node ./spikes/app-server/queue-probe.mjs",
     "test": "pnpm --filter @forge/daemon build && node --test ./tests/**/*.test.mjs",
     "capture:ui": "pnpm --filter @forge/desktop exec electron ../../scripts/capture-web-ui.cjs"
   },

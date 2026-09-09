@@ -4,10 +4,11 @@ import {
   FileCode2, FileDiff, Folder, GitBranch, LoaderCircle, MoreHorizontal, Paperclip, PanelRightClose,
   Inbox, Pin, PlugZap, Plus, Redo2, Search, Settings, Sparkles, TerminalSquare, Undo2, UserRound, X,
 } from "lucide-react";
-import type { Activity, ApprovalRequest, BootstrapPayload, ForgeTask, GitStatus, ProviderOption, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
 import ContextFilePicker from "./ContextFilePicker";
 import OnboardingDialog from "./OnboardingDialog";
 import SettingsModal from "./SettingsModal";
+import TurnQueue from "./TurnQueue";
 
 const TerminalPanel = lazy(() => import("./TerminalPanel"));
 const GitPanel = lazy(() => import("./GitPanel"));
@@ -33,7 +34,7 @@ interface ActivityTurn {
 function groupActivities(activities: Activity[]): ActivityTurn[] {
   const turns: ActivityTurn[] = [];
   for (const activity of activities) {
-    if (activity.kind === "message" && activity.role === "user") {
+    if (activity.kind === "message" && activity.role === "user" && activity.delivery !== "steer") {
       turns.push({ id: activity.id, user: activity, events: [] });
       continue;
     }
@@ -133,7 +134,8 @@ function ForgeTurn({ turn, state, checkpointBusy, onCheckpoint }: {
   const finalMessage = [...turn.events].reverse().find((activity): activity is MessageActivity => activity.kind === "message" && activity.role === "assistant");
   const finalNotice = [...turn.events].reverse().find((activity) => activity.kind === "notice");
   const result = state === "failed" ? finalNotice || finalMessage : finalMessage || finalNotice;
-  const process = result ? turn.events.filter((activity) => activity !== result) : turn.events;
+  const steeredMessages = turn.events.filter((activity): activity is MessageActivity => activity.kind === "message" && activity.role === "user" && activity.delivery === "steer");
+  const process = (result ? turn.events.filter((activity) => activity !== result) : turn.events).filter((activity) => !steeredMessages.includes(activity as MessageActivity));
   const operationCount = turn.events.filter((activity) => activity.kind === "command" || activity.kind === "files" || activity.kind === "tool").length;
   const fileCount = new Set(turn.events.flatMap((activity) => activity.kind === "files" ? activity.files.map((file) => file.path) : [])).size;
   const timestamp = result?.at || turn.events.at(-1)?.at || turn.user?.at || new Date().toISOString();
@@ -148,6 +150,9 @@ function ForgeTurn({ turn, state, checkpointBusy, onCheckpoint }: {
       <div className="activity-icon agent-icon">{state === "running" ? <LoaderCircle className="spin" size={14} /> : state === "failed" ? <AlertCircle size={14} /> : <Sparkles size={14} />}</div>
       <div className="activity-content turn-content">
         <div className="activity-meta"><strong>Forge</strong><span>{time(timestamp)}</span></div>
+        {steeredMessages.length > 0 && <div className="steered-messages" aria-label="本轮补充指令">
+          {steeredMessages.map((message) => <div key={message.id}><span>你的补充</span><p>{message.text}</p>{Boolean(message.contextFiles?.length) && <small><FileCode2 size={11} />{message.contextFiles?.length} 个上下文文件</small>}</div>)}
+        </div>}
         <div className="turn-result">
           <p>{resultText || fallback}</p>
           <div className="turn-summary" aria-live="polite">
@@ -277,6 +282,9 @@ export function App() {
   const [checkpointBusy, setCheckpointBusy] = useState("");
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [contextFiles, setContextFiles] = useState<WorkspaceFileInfo[]>([]);
+  const [runningInputMode, setRunningInputMode] = useState<"steer" | "queue">("steer");
+  const [followUpBusy, setFollowUpBusy] = useState(false);
+  const [queueBusy, setQueueBusy] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const settingsDialogRef = useRef<HTMLElement>(null);
@@ -310,6 +318,7 @@ export function App() {
   const viewTasks = useMemo(() => (bootstrap?.tasks || []).filter((task) => Boolean(task.archived) === showArchived), [bootstrap?.tasks, showArchived]);
   const selectedTask = useMemo(() => viewTasks.find((task) => task.id === selectedTaskId) || viewTasks[0], [selectedTaskId, viewTasks]);
   const selectedProvider = bootstrap?.providers.find((provider) => provider.id === providerId) || bootstrap?.providers[0];
+  const taskRunning = selectedTask?.state === "running" || sending;
   const timeline = useMemo(() => groupActivities(selectedTask?.activities || []), [selectedTask?.activities]);
   const visibleTasks = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
@@ -538,8 +547,79 @@ export function App() {
     }
   };
 
+  const applyTaskStreamEvent = (taskId: string, event: TaskStreamEvent) => {
+    if (event.type === "activity") {
+      patchTask(taskId, (task) => {
+        const exists = task.activities.some((item) => item.id === event.activity.id);
+        return {
+          ...task,
+          state: "running",
+          activities: exists
+            ? task.activities.map((item) => item.id === event.activity.id ? event.activity : item)
+            : [...task.activities, event.activity],
+        };
+      });
+    }
+    if (event.type === "queue") patchTask(taskId, (task) => ({ ...task, queuedTurns: event.items }));
+    if (event.type === "approval") {
+      setApprovals((current) => current.some((approval) => approval.id === event.approval.id) ? current : [...current, event.approval]);
+    }
+    if (event.type === "approvalResolved") {
+      setApprovals((current) => current.filter((approval) => approval.id !== event.approvalId));
+    }
+    if (event.type === "turn") patchTask(taskId, (task) => ({ ...task, state: event.state === "started" ? "running" : event.state }));
+    if (event.type === "error") setError(event.message);
+  };
+
+  const consumeTaskStream = async (response: Response, taskId: string) => {
+    if (!response.body) throw new Error("浏览器不支持流式响应");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const parsed = parseSseChunk(buffer);
+      buffer = parsed.rest;
+      for (const event of parsed.events) applyTaskStreamEvent(taskId, event);
+      if (done) break;
+    }
+  };
+
+  const submitRunningInput = async () => {
+    if (!selectedTask || !draft.trim() || followUpBusy) return;
+    const text = draft.trim();
+    const turnContextFiles = [...contextFiles];
+    setDraft("");
+    setFollowUpBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/${selectedTask.id}/${runningInputMode}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, contextPaths: turnContextFiles.map((file) => file.path) }),
+      });
+      const payload = await response.json() as { message?: string; activity?: Activity; items?: QueuedTurn[] };
+      if (!response.ok) throw new Error(payload.message || (runningInputMode === "steer" ? "补充指令失败" : "加入队列失败"));
+      if (payload.activity) applyTaskStreamEvent(selectedTask.id, { type: "activity", activity: payload.activity });
+      if (payload.items) patchTask(selectedTask.id, (task) => ({ ...task, queuedTurns: payload.items }));
+      setContextPickerOpen(false);
+      setContextFiles([]);
+    } catch (reason) {
+      setDraft((current) => current || text);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setFollowUpBusy(false);
+    }
+  };
+
   const sendTurn = async () => {
-    if (!draft.trim() || sending) return;
+    if (!draft.trim() || followUpBusy) return;
+    if ((selectedTask?.state === "running" || sending) && selectedTask) {
+      await submitRunningInput();
+      return;
+    }
+    if (sending) return;
     setError("");
     setSending(true);
     const text = draft.trim();
@@ -574,39 +654,7 @@ export function App() {
       accepted = true;
       setContextPickerOpen(false);
       setContextFiles([]);
-      if (!response.body) throw new Error("浏览器不支持流式响应");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-        const parsed = parseSseChunk(buffer);
-        buffer = parsed.rest;
-        for (const event of parsed.events) {
-          if (event.type === "activity") {
-            patchTask(targetTask.id, (task) => {
-              const exists = task.activities.some((item) => item.id === event.activity.id);
-              return {
-                ...task,
-                state: "running",
-                activities: exists
-                  ? task.activities.map((item) => item.id === event.activity.id ? event.activity : item)
-                  : [...task.activities, event.activity],
-              };
-            });
-          }
-          if (event.type === "approval") {
-            setApprovals((current) => current.some((approval) => approval.id === event.approval.id) ? current : [...current, event.approval]);
-          }
-          if (event.type === "approvalResolved") {
-            setApprovals((current) => current.filter((approval) => approval.id !== event.approvalId));
-          }
-          if (event.type === "turn") patchTask(targetTask.id, (task) => ({ ...task, state: event.state === "started" ? "running" : event.state }));
-          if (event.type === "error") setError(event.message);
-        }
-        if (done) break;
-      }
+      await consumeTaskStream(response, targetTask.id);
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) {
         if (!accepted) setDraft((current) => current || text);
@@ -625,6 +673,70 @@ export function App() {
     abortRef.current?.abort();
     patchTask(selectedTask.id, (task) => ({ ...task, state: "stopped" }));
     setSending(false);
+  };
+
+  const deleteQueuedTurn = async (queuedTurn: QueuedTurn) => {
+    if (!selectedTask || queueBusy || !window.confirm(`取消等待任务“${queuedTurn.text}”吗？`)) return;
+    setQueueBusy(queuedTurn.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/${selectedTask.id}/queue/${encodeURIComponent(queuedTurn.id)}`, { method: "DELETE" });
+      const payload = await response.json() as { message?: string; items?: QueuedTurn[] };
+      if (!response.ok || !payload.items) throw new Error(payload.message || "取消等待任务失败");
+      patchTask(selectedTask.id, (task) => ({ ...task, queuedTurns: payload.items }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setQueueBusy("");
+    }
+  };
+
+  const moveQueuedTurn = async (index: number, direction: -1 | 1) => {
+    if (!selectedTask || queueBusy) return;
+    const queuedTurns = [...(selectedTask.queuedTurns || [])];
+    const targetIndex = index + direction;
+    if (!queuedTurns[index] || !queuedTurns[targetIndex]) return;
+    [queuedTurns[index], queuedTurns[targetIndex]] = [queuedTurns[targetIndex], queuedTurns[index]];
+    setQueueBusy("reorder");
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/${selectedTask.id}/queue/reorder`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ queuedTurnIds: queuedTurns.map((item) => item.id) }),
+      });
+      const payload = await response.json() as { message?: string; items?: QueuedTurn[] };
+      if (!response.ok || !payload.items) throw new Error(payload.message || "调整队列顺序失败");
+      patchTask(selectedTask.id, (task) => ({ ...task, queuedTurns: payload.items }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setQueueBusy("");
+    }
+  };
+
+  const resumeQueuedTurns = async () => {
+    if (!selectedTask || sending || queueBusy) return;
+    setQueueBusy("start");
+    setSending(true);
+    setError("");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const response = await fetch(`/api/tasks/${selectedTask.id}/queue/start`, { method: "POST", signal: controller.signal });
+      if (!response.ok) {
+        const payload = await response.json() as { message?: string };
+        throw new Error(payload.message || "继续队列失败");
+      }
+      await consumeTaskStream(response, selectedTask.id);
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSending(false);
+      setQueueBusy("");
+      abortRef.current = null;
+      if (!controller.signal.aborted) void refresh();
+    }
   };
 
   const resolveApproval = async (approval: ApprovalRequest, decision: "accept" | "acceptForSession" | "decline") => {
@@ -775,6 +887,14 @@ export function App() {
           {approvals.filter((approval) => approval.taskId === selectedTask?.id).map((approval) => (
             <ApprovalCard key={approval.id} approval={approval} busy={approvalBusy === approval.id} onDecision={(decision) => void resolveApproval(approval, decision)} />
           ))}
+          <TurnQueue
+            items={selectedTask?.queuedTurns || []}
+            running={Boolean(taskRunning)}
+            busyId={queueBusy}
+            onMove={(index, direction) => void moveQueuedTurn(index, direction)}
+            onDelete={(item) => void deleteQueuedTurn(item)}
+            onStart={() => void resumeQueuedTurns()}
+          />
           {error && <div className="inline-error" role="alert"><AlertCircle size={14} />{error}<button aria-label="关闭错误提示" onClick={() => setError("")}><X size={13} /></button></div>}
           <div className="composer">
             {contextPickerOpen && <ContextFilePicker selected={contextFiles} onChange={setContextFiles} onClose={() => {
@@ -788,11 +908,15 @@ export function App() {
               if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendTurn(); }
             }} placeholder={showArchived ? "归档任务为只读，请先恢复后继续" : "描述要完成的任务…"} rows={2} />
             <div className="composer-actions">
-              <button ref={paperclipRef} className={`composer-icon ${contextPickerOpen ? "active" : ""}`} type="button" aria-label="添加工作区上下文文件" aria-expanded={contextPickerOpen} aria-controls="context-file-picker" disabled={showArchived || sending} onClick={() => setContextPickerOpen((open) => !open)}><Paperclip size={18} /></button>
+              <button ref={paperclipRef} className={`composer-icon ${contextPickerOpen ? "active" : ""}`} type="button" aria-label="添加工作区上下文文件" aria-expanded={contextPickerOpen} aria-controls="context-file-picker" disabled={showArchived || followUpBusy} onClick={() => setContextPickerOpen((open) => !open)}><Paperclip size={18} /></button>
               <button className="context-chip" type="button" title={bootstrap.workspace.path}><FileCode2 size={15} />当前工作区</button>
               <span className="composer-spacer" />
               <span className="approval-mode">按需批准</span>
-              {sending ? <button className="stop-button" onClick={stopTurn} aria-label="停止任务"><CircleStop size={17} /></button> : <button className="send-button" onClick={sendTurn} disabled={showArchived || !draft.trim()} aria-label="发送"><ArrowUp size={18} /></button>}
+              {taskRunning && <label className="running-input-mode"><span className="sr-only">运行中输入方式</span><select value={runningInputMode} disabled={followUpBusy} onChange={(event) => setRunningInputMode(event.target.value as "steer" | "queue")}><option value="steer">补充当前任务</option><option value="queue">排到下一轮</option></select></label>}
+              {taskRunning ? <>
+                <button className="send-button" onClick={sendTurn} disabled={showArchived || followUpBusy || !draft.trim()} aria-label={runningInputMode === "steer" ? "补充当前任务" : "加入下一轮队列"}>{followUpBusy ? <LoaderCircle className="spin" size={16} /> : <ArrowUp size={18} />}</button>
+                <button className="stop-button" onClick={stopTurn} aria-label="停止当前任务"><CircleStop size={17} /></button>
+              </> : <button className="send-button" onClick={sendTurn} disabled={showArchived || !draft.trim()} aria-label="发送"><ArrowUp size={18} /></button>}
             </div>
           </div>
           <p className="composer-hint">Enter 发送 · Shift+Enter 换行</p>

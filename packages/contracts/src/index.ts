@@ -25,6 +25,7 @@ export type Activity =
       role: "user" | "assistant";
       text: string;
       contextFiles?: WorkspaceFileInfo[];
+      delivery?: "turn" | "steer";
       at: string;
     }
   | {
@@ -69,6 +70,7 @@ export interface ForgeTask {
   archived?: boolean;
   state: "idle" | "running" | "completed" | "stopped" | "failed";
   activities: Activity[];
+  queuedTurns?: QueuedTurn[];
   agentSession?: {
     providerId: string;
     model: string;
@@ -77,6 +79,15 @@ export interface ForgeTask {
     updatedAt: string;
   };
   updatedAt: string;
+}
+
+export interface QueuedTurn {
+  id: string;
+  clientUserMessageId: string;
+  providerId: "demo" | "deepseek";
+  text: string;
+  contextFiles: WorkspaceFileInfo[];
+  createdAt: string;
 }
 
 export interface ProviderOption {
@@ -253,6 +264,7 @@ export interface BootstrapPayload {
 export type TaskStreamEvent =
   | { type: "turn"; turnId: string; state: "started" | "completed" | "stopped" | "failed" }
   | { type: "activity"; activity: Activity }
+  | { type: "queue"; items: QueuedTurn[] }
   | { type: "approval"; approval: ApprovalRequest }
   | { type: "approvalResolved"; approvalId: string; decision: "accept" | "acceptForSession" | "decline" }
   | { type: "runtime"; runtime: RuntimeStatus }

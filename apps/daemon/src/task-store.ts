@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Activity, ForgeTask } from "@forge/contracts";
+import type { Activity, ForgeTask, QueuedTurn } from "@forge/contracts";
 
 interface PersistedState {
   schemaVersion: 2;
@@ -66,7 +66,7 @@ export class TaskStore {
       userId: "local",
       workspacePath,
       tasks: (loaded.tasks || []).map((task) => {
-        const migrated: ForgeTask = { ...task, workspacePath: task.workspacePath || workspacePath };
+        const migrated: ForgeTask = { ...task, workspacePath: task.workspacePath || workspacePath, queuedTurns: task.queuedTurns || [] };
         if (migratingToIsolatedRuntime && migrated.agentSession) {
           delete migrated.agentSession;
           migrated.activities = [...migrated.activities, {
@@ -131,6 +131,7 @@ export class TaskStore {
       workspacePath,
       state: "idle",
       activities: [],
+      queuedTurns: [],
       updatedAt: now(),
     };
     this.state.tasks.unshift(task);
@@ -169,6 +170,40 @@ export class TaskStore {
     task.updatedAt = now();
     await this.persist();
     return task;
+  }
+
+  async addQueuedTurn(id: string, queuedTurn: QueuedTurn) {
+    const task = this.find(id);
+    if (!task) return null;
+    task.queuedTurns = [...(task.queuedTurns || []), queuedTurn];
+    task.updatedAt = now();
+    task.subtitle = `${task.queuedTurns.length} 条等待执行`;
+    await this.persist();
+    return [...task.queuedTurns];
+  }
+
+  async removeQueuedTurn(id: string, queuedTurnId: string) {
+    const task = this.find(id);
+    if (!task) return null;
+    task.queuedTurns = (task.queuedTurns || []).filter((item) => item.id !== queuedTurnId);
+    task.updatedAt = now();
+    if (task.queuedTurns.length) task.subtitle = `${task.queuedTurns.length} 条等待执行`;
+    await this.persist();
+    return [...task.queuedTurns];
+  }
+
+  async reorderQueuedTurns(id: string, queuedTurnIds: string[]) {
+    const task = this.find(id);
+    if (!task) return null;
+    const current = task.queuedTurns || [];
+    const byId = new Map(current.map((item) => [item.id, item]));
+    if (queuedTurnIds.length !== current.length || new Set(queuedTurnIds).size !== current.length || queuedTurnIds.some((itemId) => !byId.has(itemId))) {
+      throw new Error("队列顺序与当前任务不一致，请刷新后重试");
+    }
+    task.queuedTurns = queuedTurnIds.map((itemId) => byId.get(itemId) as QueuedTurn);
+    task.updatedAt = now();
+    await this.persist();
+    return [...task.queuedTurns];
   }
 
   async update(id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) {

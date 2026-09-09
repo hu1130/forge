@@ -82,3 +82,35 @@ test("task archive state survives a reload and can be restored", async () => {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("queued turns persist, reorder, and survive an interrupted daemon restart", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-task-turn-queue-"));
+  const previousDataDir = process.env.FORGE_DATA_DIR;
+  process.env.FORGE_DATA_DIR = dataDir;
+
+  try {
+    const { TaskStore } = await import(`${taskStoreUrl}?turn-queue=${Date.now()}`);
+    const store = new TaskStore("C:\\workspace");
+    await store.load();
+    const task = await store.create("队列恢复测试");
+    await store.setState(task.id, "running");
+    const first = { id: "queue-1", clientUserMessageId: "message-1", providerId: "demo", text: "第一条", contextFiles: [], createdAt: new Date().toISOString() };
+    const second = { id: "queue-2", clientUserMessageId: "message-2", providerId: "demo", text: "第二条", contextFiles: [], createdAt: new Date().toISOString() };
+    await store.addQueuedTurn(task.id, first);
+    await store.addQueuedTurn(task.id, second);
+    await store.reorderQueuedTurns(task.id, [second.id, first.id]);
+
+    const reloaded = new TaskStore("C:\\workspace");
+    await reloaded.load();
+    assert.equal(reloaded.find(task.id)?.state, "stopped");
+    assert.deepEqual(reloaded.find(task.id)?.queuedTurns?.map((item) => item.id), [second.id, first.id]);
+
+    await reloaded.removeQueuedTurn(task.id, second.id);
+    assert.deepEqual(reloaded.find(task.id)?.queuedTurns?.map((item) => item.id), [first.id]);
+    await assert.rejects(() => reloaded.reorderQueuedTurns(task.id, ["unknown"]), /队列顺序与当前任务不一致/);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.FORGE_DATA_DIR;
+    else process.env.FORGE_DATA_DIR = previousDataDir;
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

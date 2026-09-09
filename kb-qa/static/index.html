@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>知识库问答 · kb-qa</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --border: #e3e6ea;
+      --text: #1c2430;
+      --muted: #6b7480;
+      --accent: #2563eb;
+      --accent-weak: #eff4ff;
+      --green: #15803d;
+      --green-weak: #ecfdf3;
+      --amber: #b45309;
+      --amber-weak: #fffbeb;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .shell { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
+    header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+    header h1 { font-size: 20px; margin: 0; }
+    .badge {
+      font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 600;
+    }
+    .badge.offline { background: var(--amber-weak); color: var(--amber); }
+    .badge.rag { background: var(--green-weak); color: var(--green); }
+    .meta { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    textarea {
+      width: 100%; min-height: 76px; resize: vertical; border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px; font: inherit; font-size: 15px;
+      outline: none; background: var(--card);
+    }
+    textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+    .actions { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+    button.ask {
+      background: var(--accent); color: #fff; border: 0; border-radius: 999px; cursor: pointer;
+      padding: 9px 22px; font-size: 15px; font-weight: 600;
+    }
+    button.ask:disabled { opacity: .6; cursor: wait; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .examples { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+    .examples button {
+      background: var(--card); border: 1px solid var(--border); color: var(--muted);
+      border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+    }
+    .examples button:hover { border-color: var(--accent); color: var(--accent); }
+    #answerWrap { margin-top: 18px; display: none; }
+    #answerWrap .mode-line { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    #answer { line-height: 1.75; white-space: pre-wrap; font-size: 15px; }
+    .sources-title { margin: 20px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+    .source {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 10px 14px; margin-bottom: 8px;
+    }
+    .source .head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+    .source .doc { font-size: 13px; color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+    .source .score { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+    .source .excerpt { font-size: 13px; color: var(--text); line-height: 1.6; }
+    .empty { color: var(--muted); }
+    #err { color: #b91c1c; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
+    footer { margin-top: 30px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+    code { background: #eef1f5; padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>知识库问答</h1>
+      <span id="modeBadge" class="badge offline">加载中…</span>
+      <span id="meta" class="meta"></span>
+    </header>
+
+    <div class="card">
+      <textarea id="q" placeholder="输入问题，例如：RAG 的完整流程是什么？"></textarea>
+      <div class="actions">
+        <button id="ask" class="ask">提问</button>
+        <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+      </div>
+      <div class="examples" id="examples"></div>
+    </div>
+
+    <div id="err"></div>
+
+    <section id="answerWrap">
+      <div class="mode-line" id="modeLine"></div>
+      <div class="card"><div id="answer" class="empty">…</div></div>
+      <div class="sources-title">引用片段</div>
+      <div id="sources"></div>
+    </section>
+
+    <footer>
+      当前为离线本地检索（BM25 + 中文分词）。配置 <code>KB_LLM_API_KEY</code> 后重启，
+      同一页面会自动升级为「检索 + 大模型生成」。接口文档见 <code>/docs</code>。
+    </footer>
+  </div>
+
+  <script>
+    const EXAMPLES = [
+      "RAG 的完整流程是什么？",
+      "FastAPI 是什么？",
+      "新能源汽车主要分哪几类？",
+      "本演示怎么升级到大模型生成？",
+    ];
+    const qEl = document.getElementById("q");
+    const askEl = document.getElementById("ask");
+    const modeBadge = document.getElementById("modeBadge");
+    const metaEl = document.getElementById("meta");
+    const errEl = document.getElementById("err");
+    const wrap = document.getElementById("answerWrap");
+    const modeLine = document.getElementById("modeLine");
+    const answerEl = document.getElementById("answer");
+    const sourcesEl = document.getElementById("sources");
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function renderText(text) {
+      const safe = esc(text);
+      return safe
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\n/g, "<br>");
+    }
+
+    function setMode(mode, llmConfigured, info) {
+      const isRag = mode === "rag";
+      modeBadge.textContent = isRag ? "RAG · 检索 + 大模型生成" : "离线检索模式";
+      modeBadge.className = "badge " + (isRag ? "rag" : "offline");
+      const docs = info && info.documents != null ? info.documents : "?";
+      const chunks = info && info.chunks != null ? info.chunks : "?";
+      metaEl.textContent = `文档 ${docs} 篇 · 分块 ${chunks} 块 · tokenizer ${info && info.tokenizer || ""}`;
+    }
+
+    function setLoading(on) {
+      askEl.disabled = on;
+      askEl.textContent = on ? "思考中…" : "提问";
+    }
+
+    function showError(msg) {
+      errEl.textContent = msg;
+    }
+
+    async function loadHealth() {
+      try {
+        const res = await fetch("/api/health");
+        const data = await res.json();
+        if (data.ok) setMode(data.mode, data.llm_configured, data);
+        else modeBadge.textContent = "服务异常";
+      } catch (e) {
+        modeBadge.textContent = "无法连接后端";
+      }
+    }
+
+    function renderSources(sources) {
+      sourcesEl.innerHTML = "";
+      if (!sources || !sources.length) {
+        sourcesEl.innerHTML = '<div class="empty">无引用片段</div>';
+        return;
+      }
+      for (const s of sources) {
+        const div = document.createElement("div");
+        div.className = "source";
+        div.innerHTML =
+          '<div class="head">' +
+          '<span class="doc">' + esc(s.doc) + "</span>" +
+          '<span class="score">相关度 ' + esc(s.score) + "</span>" +
+          "</div>" +
+          '<div class="excerpt">' + esc(s.excerpt) + "</div>";
+        sourcesEl.appendChild(div);
+      }
+    }
+
+    async function ask() {
+      const question = qEl.value.trim();
+      showError("");
+      if (!question) {
+        qEl.focus();
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          showError(data.error || ("请求失败 HTTP " + res.status));
+          return;
+        }
+        wrap.style.display = "block";
+        modeLine.textContent =
+          data.mode === "rag"
+            ? "答案由大模型基于检索资料生成："
+            : "离线检索结果（未配置大模型，摘录自最相关片段）：";
+        answerEl.className = "";
+        answerEl.innerHTML = renderText(data.answer);
+        renderSources(data.sources);
+      } catch (e) {
+        showError("请求失败：" + e.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // examples
+    const exEl = document.getElementById("examples");
+    for (const ex of EXAMPLES) {
+      const b = document.createElement("button");
+      b.textContent = ex;
+      b.addEventListener("click", () => {
+        qEl.value = ex;
+        ask();
+      });
+      exEl.appendChild(b);
+    }
+
+    qEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        ask();
+      }
+    });
+    askEl.addEventListener("click", ask);
+
+    loadHealth();
+  </script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "fallbackPolicy": "disabled",
+  "requiredCapabilities": [
+    "streamingText",
+    "toolCalling",
+    "cancellation"
+  ],
+  "conditionalCapabilities": [
+    "imageInput"
+  ],
+  "providers": [
+    {
+      "id": "openai",
+      "transport": "responses",
+      "status": "blocked",
+      "reason": "OPENAI_API_KEY is not present"
+    },
+    {
+      "id": "anthropic",
+      "transport": "gateway",
+      "status": "blocked",
+      "reason": "ANTHROPIC_API_KEY is not present"
+    },
+    {
+      "id": "gemini",
+      "transport": "gateway",
+      "status": "blocked",
+      "reason": "GEMINI_API_KEY and GOOGLE_GENERATIVE_AI_API_KEY are not present"
+    },
+    {
+      "id": "deepseek",
+      "transport": "responses-via-app-server",
+      "status": "implemented",
+      "reason": "Requires DEEPSEEK_API_KEY at runtime"
+    },
+    {
+      "id": "dashscope",
+      "transport": "openai-compatible",
+      "status": "blocked",
+      "reason": "DASHSCOPE_API_KEY is not present"
+    },
+    {
+      "id": "zhipu",
+      "transport": "openai-compatible",
+      "status": "blocked",
+      "reason": "ZHIPUAI_API_KEY is not present"
+    },
+    {
+      "id": "moonshot",
+      "transport": "openai-compatible",
+      "status": "blocked",
+      "reason": "MOONSHOT_API_KEY is not present"
+    },
+    {
+      "id": "ollama",
+      "transport": "openai-compatible-local",
+      "status": "blocked",
+      "reason": "Ollama is installed but its local endpoint is not running"
+    }
+  ]
+}

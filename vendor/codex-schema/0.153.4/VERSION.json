@@ -1,0 +1,9 @@
+{
+  "codexCli": "0.153.4",
+  "experimental": true,
+  "generatedWith": [
+    "codex app-server generate-json-schema --experimental",
+    "codex app-server generate-ts --experimental"
+  ],
+  "generatedOn": "2026-09-07"
+}

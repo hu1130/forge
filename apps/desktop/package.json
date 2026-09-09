@@ -1,0 +1,67 @@
+{
+  "name": "@forge/desktop",
+  "version": "0.9.0",
+  "private": true,
+  "description": "Forge Windows local AI coding workspace",
+  "author": "Forge",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "build": "node -e \"console.log('Electron shell is JavaScript-only; no compile step required')\"",
+    "pack": "pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --dir",
+    "dist": "pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.forge.local",
+    "productName": "Forge",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web"
+      },
+      {
+        "from": ".bundle/codex",
+        "to": "codex"
+      },
+      {
+        "from": ".bundle/daemon",
+        "to": "daemon"
+      },
+      {
+        "from": ".bundle/daemon/node_modules/node-pty",
+        "to": "daemon/node_modules/node-pty"
+      },
+      {
+        "from": "third-party",
+        "to": "licenses"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Forge-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Forge"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "local-codex-like",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "concurrently -k -n daemon,web -c yellow,blue \"pnpm --filter @forge/daemon dev\" \"pnpm --filter @forge/web dev\"",
+    "dev:desktop": "concurrently -k -n daemon,web,desktop -c yellow,blue,magenta \"pnpm --filter @forge/daemon dev\" \"pnpm --filter @forge/web dev\" \"wait-on http://127.0.0.1:5173 http://127.0.0.1:4782/api/health && pnpm --filter @forge/desktop dev\"",
+    "build": "pnpm -r --if-present build",
+    "dist:win": "pnpm --filter @forge/desktop dist",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "p0:probe": "node ./spikes/app-server/handshake.mjs",
+    "test": "pnpm --filter @forge/daemon build && node --test ./tests/**/*.test.mjs",
+    "capture:ui": "pnpm --filter @forge/desktop exec electron ../../scripts/capture-web-ui.cjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "esbuild": "0.27.2",
+    "wait-on": "^8.0.4"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

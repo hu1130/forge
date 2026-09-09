@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "label": "Forge 精选市场",
+  "items": [
+    {
+      "id": "forge-code-review",
+      "kind": "skill",
+      "name": "代码审查",
+      "description": "按风险优先级审查改动，给出可定位、可验证的修复建议。",
+      "details": "适合合并前检查、回归风险排查和缺失测试识别。Skill 会先理解改动意图，再检查正确性、安全性、边界条件和测试证据，不会把纯风格偏好当成缺陷。",
+      "publisher": "Forge",
+      "version": "1.0.0",
+      "category": "开发",
+      "tags": ["review", "安全", "测试"],
+      "featured": true,
+      "verified": true,
+      "source": {
+        "kind": "bundled",
+        "path": "marketplace/skills/forge-code-review"
+      }
+    },
+    {
+      "id": "forge-fastapi-service",
+      "kind": "skill",
+      "name": "FastAPI 服务开发",
+      "description": "用最小可工作的结构创建或扩展 FastAPI 接口，并完成请求级验证。",
+      "details": "适合企业 API、RAG 后端和第三方模型接入。Skill 强调先读现有结构、明确输入输出、保持同步/异步边界一致，并通过测试客户端或真实 HTTP 请求验收。",
+      "publisher": "Forge",
+      "version": "1.0.0",
+      "category": "开发",
+      "tags": ["Python", "FastAPI", "API"],
+      "featured": true,
+      "verified": true,
+      "source": {
+        "kind": "bundled",
+        "path": "marketplace/skills/forge-fastapi-service"
+      }
+    },
+    {
+      "id": "context7",
+      "kind": "mcp",
+      "name": "Context7",
+      "description": "查询编程库的最新官方文档与代码示例。",
+      "details": "连接 Upstash 托管的 Context7 MCP 服务。无需本机安装 Node.js；API Key 可选，填写后由 Windows 凭据加密保存。调用外部工具时仍遵循 Forge 的审批策略。",
+      "publisher": "Upstash",
+      "version": "2.0.0",
+      "category": "知识",
+      "tags": ["文档", "代码", "远程 MCP"],
+      "featured": true,
+      "homepage": "https://context7.com/",
+      "verified": true,
+      "mcp": {
+        "name": "context7",
+        "transport": "http",
+        "args": [],
+        "envVars": [],
+        "url": "https://mcp.context7.com/mcp",
+        "approvalMode": "writes",
+        "useBearerToken": true,
+        "bearerTokenRequired": false
+      }
+    },
+    {
+      "id": "mcp-filesystem",
+      "kind": "mcp",
+      "name": "Filesystem",
+      "description": "让 Agent 通过 MCP 读取、搜索和修改当前工作区文件。",
+      "details": "启动官方 Filesystem MCP Server，并把访问范围限制到当前 Forge 工作区。首次启动由 npx 下载依赖，需要本机已经安装 Node.js。该服务包含写入能力，因此默认对写操作请求审批。",
+      "publisher": "Model Context Protocol",
+      "version": "1.0.0",
+      "category": "开发",
+      "tags": ["文件", "工作区", "本地 MCP"],
+      "featured": false,
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "verified": true,
+      "mcp": {
+        "name": "filesystem",
+        "transport": "stdio",
+        "command": "cmd",
+        "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "{{workspacePath}}"],
+        "envVars": [],
+        "approvalMode": "writes",
+        "useBearerToken": false,
+        "bearerTokenRequired": false
+      }
+    }
+  ]
+}

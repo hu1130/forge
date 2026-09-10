@@ -1,15 +1,17 @@
 import { useEffect, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import {
-  Box, Cable, Check, Code2, Command, FolderCog, LoaderCircle, PlugZap, Plus,
+  Box, Cable, Check, Cloud, Code2, Command, FolderCog, LoaderCircle, PlugZap, Plus,
   RefreshCw, ShieldCheck, Sparkles, Store, Trash2, X,
 } from "lucide-react";
 import type {
-  ExtensionPayload, McpApprovalMode, McpConnectionStatus, McpServerInfo,
+  CloudAuthSession, ExtensionPayload, McpApprovalMode, McpConnectionStatus, McpServerInfo,
   McpTransport, ProviderOption, RuntimeStatus, SkillInfo, SkillScope,
 } from "@forge/contracts";
 import MarketplacePanel from "./MarketplacePanel";
+import CloudWorkspacePanel from "./CloudWorkspacePanel";
 
-type SettingsTab = "providers" | "marketplace" | "skills" | "mcp" | "runtime" | "workspace";
+type SettingsTab = "account" | "providers" | "marketplace" | "skills" | "mcp" | "runtime" | "workspace";
+type AuthenticatedCloudSession = Extract<CloudAuthSession, { authenticated: true }>;
 
 interface SettingsModalProps {
   dialogRef: RefObject<HTMLElement | null>;
@@ -23,6 +25,12 @@ interface SettingsModalProps {
   apiKeyMessage: string;
   apiKeyTone: "neutral" | "success" | "error";
   encryptedStorageAvailable: boolean | null;
+  cloudWorkspace?: {
+    session: AuthenticatedCloudSession;
+    cloudApiBase: string;
+    anyTaskRunning: boolean;
+    onTasksChanged: () => Promise<void>;
+  };
   onApiKeyDraftChange: (value: string) => void;
   onTestApiKey: () => void;
   onSaveApiKey: () => void;
@@ -100,7 +108,7 @@ function McpList({ servers, busy, onToggle, onDelete }: {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const [tab, setTab] = useState<SettingsTab>("providers");
+  const [tab, setTab] = useState<SettingsTab>(props.cloudWorkspace ? "account" : "providers");
   const [extensions, setExtensions] = useState<ExtensionPayload>({ skills: [], mcpServers: [] });
   const [loadingExtensions, setLoadingExtensions] = useState(false);
   const [extensionError, setExtensionError] = useState("");
@@ -295,6 +303,7 @@ export default function SettingsModal(props: SettingsModalProps) {
     <section ref={props.dialogRef} className="settings-modal settings-modal-extended" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
       <header><div><h2 id="settings-title">设置</h2><p>模型、Skills 与 MCP 均由本机 Forge 运行时管理。</p></div><button ref={props.closeButtonRef} className="icon-button" aria-label="关闭设置" onClick={props.onClose}><X size={17} /></button></header>
       <nav className="settings-nav" aria-label="设置分类">
+        {props.cloudWorkspace && <button className={tab === "account" ? "active" : ""} onClick={() => setTab("account")}><Cloud size={16} />账户与云端</button>}
         <button className={tab === "providers" ? "active" : ""} onClick={() => setTab("providers")}><Box size={16} />模型提供商</button>
         <button className={tab === "marketplace" ? "active" : ""} onClick={() => setTab("marketplace")}><Store size={16} />扩展市场</button>
         <button className={tab === "skills" ? "active" : ""} onClick={() => setTab("skills")}><Sparkles size={16} />Skills</button>
@@ -304,6 +313,8 @@ export default function SettingsModal(props: SettingsModalProps) {
       </nav>
       <div className="settings-content">
         {(extensionError || extensionMessage) && <div className={`settings-feedback ${extensionError ? "feedback-error" : "feedback-success"}`} role={extensionError ? "alert" : "status"}>{extensionError || extensionMessage}</div>}
+
+        {tab === "account" && props.cloudWorkspace && <CloudWorkspacePanel {...props.cloudWorkspace} />}
 
         {tab === "providers" && <>
           <h3>模型提供商</h3><p>DeepSeek 通过 Responses API 接入 Codex App Server；任何失败都会直接显示，不会自动切换模型。</p>

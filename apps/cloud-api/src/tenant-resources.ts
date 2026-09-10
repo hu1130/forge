@@ -7,11 +7,17 @@ export interface TenantPrincipal {
 
 export interface TenantResourceStore {
   listResources(principal: TenantPrincipal, kind?: CloudTenantResourceKind): Promise<CloudTenantResource[]>;
-  upsertResource(principal: TenantPrincipal, input: { kind: CloudTenantResourceKind; key: string; payload: Record<string, unknown> }): Promise<CloudTenantResource>;
+  upsertResource(principal: TenantPrincipal, input: { kind: CloudTenantResourceKind; key: string; payload: Record<string, unknown>; expectedVersion?: number }): Promise<CloudTenantResource>;
   deleteResource(principal: TenantPrincipal, kind: CloudTenantResourceKind, key: string): Promise<boolean>;
 }
 
 export class TenantAccessError extends Error {}
+
+export class TenantVersionConflictError extends Error {
+  constructor(readonly current?: CloudTenantResource) {
+    super("云端资源已被其他操作更新，请重新比较后选择保留版本");
+  }
+}
 
 const allowedFields: Record<CloudTenantResourceKind, Set<string>> = {
   project: new Set(["name", "branch", "repositoryKey", "archived"]),

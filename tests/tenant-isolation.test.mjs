@@ -83,6 +83,56 @@ test("the unauthenticated local profile keeps its legacy storage location", asyn
   }
 });
 
+test("a cloud tenant imports local tasks once and tracks conflict-safe sync receipts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-local-import-"));
+  const previousDataDir = process.env.FORGE_DATA_DIR;
+  process.env.FORGE_DATA_DIR = dataDir;
+  try {
+    const local = new TaskStore("C:\\local-workspace");
+    await local.load();
+    const source = await local.create("需要导入的任务");
+    await local.addActivity(source.id, { id: "message-1", kind: "message", role: "user", text: "保留这段本机对话", at: new Date().toISOString() });
+    await local.addQueuedTurn(source.id, { id: "queue-1", clientUserMessageId: "message-2", providerId: "demo", text: "不要迁移等待队列", contextFiles: [], createdAt: new Date().toISOString() });
+    await local.setAgentSession(source.id, { providerId: "demo", model: "demo", threadId: "thread-1", cwd: "C:\\local-workspace", updatedAt: new Date().toISOString() });
+
+    const tenant = new TaskStore("C:\\tenant-workspace", tenantA);
+    await tenant.load();
+    assert.deepEqual(await tenant.localProfileSummary(), { available: true, totalTasks: 1, eligibleTasks: 1, alreadyImported: 0 });
+    const firstImport = await tenant.importLocalProfile();
+    assert.equal(firstImport.imported, 1);
+    assert.notEqual(firstImport.tasks[0].id, source.id);
+    assert.equal(firstImport.tasks[0].importedFrom.taskId, source.id);
+    assert.equal(firstImport.tasks[0].activities.some((activity) => activity.kind === "message" && activity.text === "保留这段本机对话"), true);
+    assert.deepEqual(firstImport.tasks[0].queuedTurns, []);
+    assert.equal(firstImport.tasks[0].agentSession, undefined);
+    const secondImport = await tenant.importLocalProfile();
+    assert.equal(secondImport.imported, 0);
+    assert.equal(secondImport.summary.alreadyImported, 1);
+
+    const imported = tenant.list()[0];
+    await tenant.recordTaskSync(imported.id, { resourceVersion: 1, taskUpdatedAt: imported.updatedAt });
+    const baseline = tenant.taskSyncSnapshot().receipts[imported.id];
+    assert.equal(baseline.resourceVersion, 1);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await tenant.update(imported.id, { title: "本机已经修改" });
+    const changed = tenant.find(imported.id);
+    await assert.rejects(
+      tenant.recordTaskSync(imported.id, { resourceVersion: 2, taskUpdatedAt: baseline.taskUpdatedAt }),
+      /任务已发生变化/,
+    );
+    const cloudUpdatedAt = new Date(Date.now() + 1_000).toISOString();
+    const applied = await tenant.applyCloudTaskMetadata(imported.id, {
+      title: "采用云端名称", pinned: true, archived: false, updatedAt: cloudUpdatedAt,
+    }, changed.updatedAt, 2);
+    assert.equal(applied.title, "采用云端名称");
+    assert.equal(tenant.taskSyncSnapshot().receipts[imported.id].resourceVersion, 2);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.FORGE_DATA_DIR;
+    else process.env.FORGE_DATA_DIR = previousDataDir;
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("desktop resolves cloud identity server-side before switching daemon storage", async () => {
   const desktop = await readFile("apps/desktop/main.cjs", "utf8");
   const preload = await readFile("apps/desktop/preload.cjs", "utf8");

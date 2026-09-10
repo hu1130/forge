@@ -3,6 +3,7 @@ import test from "node:test";
 import { createCloudApi } from "../apps/cloud-api/dist/app.js";
 import { DuplicateEmailError } from "../apps/cloud-api/dist/auth-service.js";
 import { hashPassword, verifyPassword } from "../apps/cloud-api/dist/password.js";
+import { TenantVersionConflictError } from "../apps/cloud-api/dist/tenant-resources.js";
 
 class MemoryAuthStore {
   users = new Map();
@@ -67,6 +68,11 @@ class MemoryTenantStore {
   async upsertResource(principal, input) {
     const mapKey = `${principal.tenantId}:${input.kind}:${input.key}`;
     const existing = this.resources.get(mapKey);
+    if (input.expectedVersion !== undefined
+      && ((!existing && input.expectedVersion !== 0) || (existing && existing.version !== input.expectedVersion))) {
+      const current = existing ? (({ tenantId: _tenantId, ...resource }) => resource)(existing) : undefined;
+      throw new TenantVersionConflictError(current);
+    }
     const timestamp = new Date().toISOString();
     const stored = {
       tenantId: principal.tenantId,
@@ -164,6 +170,9 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   const migration = await readFile("apps/cloud-api/migrations/001_identity.sql", "utf8");
   const tenantMigration = await readFile("apps/cloud-api/migrations/002_tenant_resources.sql", "utf8");
   const postgresStore = await readFile("apps/cloud-api/src/postgres-store.ts", "utf8");
+  const cloudServer = await readFile("apps/cloud-api/src/server.ts", "utf8");
+  const appRole = await readFile("infra/postgres/init/001_app_role.sql", "utf8");
+  const syncPanel = await readFile("apps/web/src/CloudWorkspacePanel.tsx", "utf8");
   assert.match(gate, /credentials: "include"/);
   assert.doesNotMatch(gate, /localStorage|sessionStorage/);
   assert.match(cloudApp, /httpOnly: true/);
@@ -175,6 +184,14 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   assert.match(tenantMigration, /FORCE ROW LEVEL SECURITY/);
   assert.match(tenantMigration, /current_setting\('forge\.tenant_id'/);
   assert.match(postgresStore, /WHERE tenant_id = \$1/);
+  assert.match(cloudServer, /FORGE_CLOUD_MIGRATION_DATABASE_URL/);
+  assert.match(appRole, /NOBYPASSRLS/);
+  assert.match(appRole, /REVOKE CREATE ON SCHEMA public FROM forge_app/);
+  assert.match(syncPanel, /expectedVersion/);
+  assert.match(syncPanel, /title: task\.title,[\s\S]*pinned: Boolean\(task\.pinned\),[\s\S]*archived: Boolean\(task\.archived\),[\s\S]*updatedAt: task\.updatedAt/);
+  assert.doesNotMatch(syncPanel, /payload:\s*task\b/);
+  assert.match(syncPanel, /使用云端/);
+  assert.match(syncPanel, /使用本机/);
 });
 
 test("login errors do not reveal whether an account exists", async () => {
@@ -270,11 +287,29 @@ test("tenant resource APIs derive ownership from each authenticated session", as
     });
     assert.equal(putB.statusCode, 200);
 
+    const staleWrite = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/task/shared-task-key",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: { payload: { title: "不应覆盖", pinned: false, archived: false, updatedAt: new Date().toISOString() }, expectedVersion: 0 },
+    });
+    assert.equal(staleWrite.statusCode, 409);
+    assert.equal(staleWrite.json().current.payload.title, "A 的任务");
+
+    const expectedWrite = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/task/shared-task-key",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: { payload: { title: "A 的新目录", pinned: true, archived: false, updatedAt: new Date().toISOString() }, expectedVersion: 1 },
+    });
+    assert.equal(expectedWrite.statusCode, 200);
+    assert.equal(expectedWrite.json().version, 2);
+
     const listA = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountA.cookie } });
     const listB = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountB.cookie } });
     assert.equal(listA.json().tenantId, accountA.session.tenant.id);
     assert.equal(listB.json().tenantId, accountB.session.tenant.id);
-    assert.equal(listA.json().resources[0].payload.title, "A 的任务");
+    assert.equal(listA.json().resources[0].payload.title, "A 的新目录");
     assert.equal(listB.json().resources[0].payload.title, "B 的任务");
 
     const secret = await app.inject({

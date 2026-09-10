@@ -5,13 +5,21 @@ import { migrateDatabase, PostgresAuthStore } from "./postgres-store.js";
 const databaseUrl = process.env.DATABASE_URL?.trim()
   || (process.env.NODE_ENV === "production" ? "" : "postgresql://forge_app:forge_app_dev_only@127.0.0.1:54329/forge");
 if (!databaseUrl) throw new Error("生产环境的 Cloud API 需要 DATABASE_URL，未自动降级到本地文件数据库");
+const migrationDatabaseUrl = process.env.FORGE_CLOUD_MIGRATION_DATABASE_URL?.trim()
+  || (process.env.NODE_ENV === "production" ? "" : "postgresql://forge:forge_dev_only@127.0.0.1:54329/forge");
+if (!migrationDatabaseUrl) throw new Error("生产环境的 Cloud API 需要独立的 FORGE_CLOUD_MIGRATION_DATABASE_URL");
 
 const host = process.env.FORGE_CLOUD_HOST || "127.0.0.1";
 const port = Number(process.env.FORGE_CLOUD_PORT || 4790);
 const allowedOrigins = (process.env.FORGE_CLOUD_ORIGINS || "http://127.0.0.1:5173,http://localhost:5173")
   .split(",").map((origin) => origin.trim()).filter(Boolean);
+const migrationPool = new Pool({ connectionString: migrationDatabaseUrl, max: 1 });
+try {
+  await migrateDatabase(migrationPool);
+} finally {
+  await migrationPool.end();
+}
 const pool = new Pool({ connectionString: databaseUrl, max: Number(process.env.FORGE_CLOUD_DB_POOL_SIZE || 10) });
-await migrateDatabase(pool);
 const store = new PostgresAuthStore(pool);
 const app = await createCloudApi({
   store,

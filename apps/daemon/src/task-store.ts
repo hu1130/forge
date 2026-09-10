@@ -2,7 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Activity, ForgeIdentityContext, ForgeTask, QueuedTurn } from "@forge/contracts";
+import type {
+  Activity, CloudTaskMetadata, ForgeIdentityContext, ForgeTask, LocalProfileImportResult,
+  LocalProfileSummary, QueuedTurn, TaskSyncReceipt, TaskSyncSnapshot,
+} from "@forge/contracts";
 
 interface PersistedState {
   schemaVersion: number;
@@ -10,9 +13,14 @@ interface PersistedState {
   userId: string;
   workspacePath: string;
   tasks: ForgeTask[];
+  taskSyncReceipts: Record<string, TaskSyncReceipt>;
 }
 
 const now = () => new Date().toISOString();
+
+function validIsoTimestamp(value: string) {
+  return Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
 
 const localIdentity: ForgeIdentityContext = { tenantId: "local", userId: "local", mode: "local" };
 
@@ -22,25 +30,27 @@ export function tenantStorageKey(tenantId: string) {
 
 function seedState(workspacePath: string, identity: ForgeIdentityContext): PersistedState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     tenantId: identity.tenantId,
     userId: identity.userId,
     workspacePath,
     tasks: [],
+    taskSyncReceipts: {},
   };
 }
 
 export class TaskStore {
   private state: PersistedState;
   private readonly filePath: string;
+  private readonly dataDir: string;
   private persistQueue = Promise.resolve();
 
   constructor(private readonly defaultWorkspacePath: string, private readonly identity: ForgeIdentityContext = localIdentity) {
     this.state = seedState(defaultWorkspacePath, identity);
-    const dataDir = process.env.FORGE_DATA_DIR || path.join(os.homedir(), ".forge");
+    this.dataDir = process.env.FORGE_DATA_DIR || path.join(os.homedir(), ".forge");
     this.filePath = identity.mode === "local"
-      ? path.join(dataDir, "state.json")
-      : path.join(dataDir, "tenants", tenantStorageKey(identity.tenantId), "state.json");
+      ? path.join(this.dataDir, "state.json")
+      : path.join(this.dataDir, "tenants", tenantStorageKey(identity.tenantId), "state.json");
   }
 
   async load() {
@@ -69,9 +79,9 @@ export class TaskStore {
     }
 
     const workspacePath = loaded.workspacePath || this.defaultWorkspacePath;
-    const migratingToIsolatedRuntime = loaded.schemaVersion !== 2 && loaded.schemaVersion !== 3;
+    const migratingToIsolatedRuntime = ![2, 3, 4].includes(loaded.schemaVersion || 0);
     this.state = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       tenantId: this.identity.tenantId,
       userId: this.identity.userId,
       workspacePath,
@@ -79,7 +89,7 @@ export class TaskStore {
         const migrated: ForgeTask = {
           ...task,
           tenantId: this.identity.tenantId,
-          userId: loaded.schemaVersion === 3 && task.userId ? task.userId : this.identity.userId,
+          userId: (loaded.schemaVersion || 0) >= 3 && task.userId ? task.userId : this.identity.userId,
           workspacePath: task.workspacePath || workspacePath,
           queuedTurns: task.queuedTurns || [],
         };
@@ -105,6 +115,9 @@ export class TaskStore {
         }
         return migrated;
       }),
+      taskSyncReceipts: loaded.taskSyncReceipts && typeof loaded.taskSyncReceipts === "object"
+        ? loaded.taskSyncReceipts
+        : {},
     };
     await this.persist();
   }
@@ -116,7 +129,7 @@ export class TaskStore {
   }
 
   private assertStoredIdentity(state: Partial<PersistedState>) {
-    if (this.identity.mode === "cloud" && state.schemaVersion === 3 && state.tenantId !== this.identity.tenantId) {
+    if (this.identity.mode === "cloud" && (state.schemaVersion || 0) >= 3 && state.tenantId !== this.identity.tenantId) {
       throw new Error("Forge 租户任务数据身份不匹配");
     }
   }
@@ -136,6 +149,112 @@ export class TaskStore {
 
   identityContext() {
     return { ...this.identity };
+  }
+
+  private async readLocalProfile() {
+    try {
+      return this.parseState(await readFile(path.join(this.dataDir, "state.json"), "utf8"));
+    } catch (error) {
+      if (this.errorCode(error) === "ENOENT") return undefined;
+      throw new Error("本机免登录资料无法读取，请先检查数据文件");
+    }
+  }
+
+  private summarizeLocalProfile(local: Partial<PersistedState> | undefined): LocalProfileSummary {
+    const localTasks = local?.tasks || [];
+    const importedIds = new Set(this.state.tasks
+      .map((task) => task.importedFrom?.profile === "local" ? task.importedFrom.taskId : undefined)
+      .filter((value): value is string => Boolean(value)));
+    const alreadyImported = localTasks.filter((task) => importedIds.has(task.id)).length;
+    return {
+      available: Boolean(local),
+      totalTasks: localTasks.length,
+      eligibleTasks: localTasks.length - alreadyImported,
+      alreadyImported,
+    };
+  }
+
+  async localProfileSummary() {
+    if (this.identity.mode !== "cloud") throw new Error("本机资料导入只在 Cloud 租户中可用");
+    return this.summarizeLocalProfile(await this.readLocalProfile());
+  }
+
+  async importLocalProfile(): Promise<LocalProfileImportResult> {
+    if (this.identity.mode !== "cloud") throw new Error("本机资料导入只在 Cloud 租户中可用");
+    const local = await this.readLocalProfile();
+    const before = this.summarizeLocalProfile(local);
+    if (!local?.tasks?.length || !before.eligibleTasks) {
+      return { imported: 0, skipped: before.alreadyImported, tasks: this.list(), summary: before };
+    }
+
+    const importedIds = new Set(this.state.tasks
+      .map((task) => task.importedFrom?.profile === "local" ? task.importedFrom.taskId : undefined)
+      .filter((value): value is string => Boolean(value)));
+    const importedAt = now();
+    const importedTasks = local.tasks.filter((task) => !importedIds.has(task.id)).map((task): ForgeTask => {
+      const state = (["idle", "completed", "stopped", "failed"] as const).includes(task.state as "idle") ? task.state : "stopped";
+      return {
+        id: randomUUID(),
+        tenantId: this.identity.tenantId,
+        userId: this.identity.userId,
+        title: task.title || "导入的本机任务",
+        subtitle: task.subtitle || "从本机资料导入",
+        workspacePath: task.workspacePath || local.workspacePath || this.state.workspacePath,
+        pinned: Boolean(task.pinned),
+        archived: Boolean(task.archived),
+        state,
+        activities: [
+          ...(Array.isArray(task.activities) ? task.activities : []),
+          {
+            id: randomUUID(),
+            kind: "notice",
+            tone: "info",
+            text: "此任务由用户主动从本机免登录资料导入；模型会话和等待队列没有迁移。",
+            at: importedAt,
+          },
+        ],
+        queuedTurns: [],
+        importedFrom: { profile: "local", taskId: task.id, importedAt },
+        updatedAt: importedAt,
+      };
+    });
+    this.state.tasks.unshift(...importedTasks);
+    await this.persist();
+    const summary = this.summarizeLocalProfile(local);
+    return { imported: importedTasks.length, skipped: summary.alreadyImported, tasks: this.list(), summary };
+  }
+
+  taskSyncSnapshot(): TaskSyncSnapshot {
+    return { tasks: this.list(), receipts: { ...this.state.taskSyncReceipts } };
+  }
+
+  async recordTaskSync(taskId: string, receipt: TaskSyncReceipt) {
+    const task = this.find(taskId);
+    if (!task) throw new Error("任务不存在");
+    if (!Number.isSafeInteger(receipt.resourceVersion) || receipt.resourceVersion < 1 || task.updatedAt !== receipt.taskUpdatedAt) {
+      throw new Error("任务已发生变化，请重新同步");
+    }
+    this.state.taskSyncReceipts[taskId] = { ...receipt };
+    await this.persist();
+    return this.taskSyncSnapshot();
+  }
+
+  async applyCloudTaskMetadata(taskId: string, metadata: CloudTaskMetadata, expectedLocalUpdatedAt: string, resourceVersion: number) {
+    const task = this.find(taskId);
+    if (!task) throw new Error("任务不存在");
+    if (task.state === "running") throw new Error("请先停止任务，再应用云端目录信息");
+    if (task.updatedAt !== expectedLocalUpdatedAt) throw new Error("本机任务已发生变化，请重新同步");
+    if (!metadata.title.trim() || metadata.title.trim().length > 80 || !validIsoTimestamp(metadata.updatedAt)) {
+      throw new Error("云端任务目录信息无效");
+    }
+    if (!Number.isSafeInteger(resourceVersion) || resourceVersion < 1) throw new Error("云端任务版本无效");
+    task.title = metadata.title.trim();
+    task.pinned = metadata.pinned;
+    task.archived = metadata.archived;
+    task.updatedAt = metadata.updatedAt;
+    this.state.taskSyncReceipts[taskId] = { resourceVersion, taskUpdatedAt: metadata.updatedAt };
+    await this.persist();
+    return task;
   }
 
   async setWorkspace(workspacePath: string) {

@@ -78,6 +78,38 @@ export interface ForgeTask {
     cwd: string;
     updatedAt: string;
   };
+  importedFrom?: { profile: "local"; taskId: string; importedAt: string };
+  updatedAt: string;
+}
+
+export interface LocalProfileSummary {
+  available: boolean;
+  totalTasks: number;
+  eligibleTasks: number;
+  alreadyImported: number;
+}
+
+export interface LocalProfileImportResult {
+  imported: number;
+  skipped: number;
+  tasks: ForgeTask[];
+  summary: LocalProfileSummary;
+}
+
+export interface TaskSyncReceipt {
+  resourceVersion: number;
+  taskUpdatedAt: string;
+}
+
+export interface TaskSyncSnapshot {
+  tasks: ForgeTask[];
+  receipts: Record<string, TaskSyncReceipt>;
+}
+
+export interface CloudTaskMetadata {
+  title: string;
+  pinned: boolean;
+  archived: boolean;
   updatedAt: string;
 }
 

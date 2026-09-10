@@ -4,7 +4,7 @@ import path from "node:path";
 import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import Fastify, { type FastifyReply } from "fastify";
-import type { Activity, ApprovalRequest, BootstrapPayload, ExtensionPayload, ForgeIdentityContext, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, CloudTaskMetadata, ExtensionPayload, ForgeIdentityContext, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
 import { applyTaskChanges, type ChangeAction } from "./change-manager.js";
 import { CodexBridge, type RpcMessage } from "./codex-bridge.js";
 import { deepSeekAppServerArgs, deepSeekSettings } from "./deepseek.js";
@@ -1065,6 +1065,62 @@ app.post<{
   pendingApprovals.delete(approval.id);
   approval.respond({ type: "approvalResolved", approvalId: approval.id, decision });
   return { ok: true };
+});
+
+app.get("/api/local-profile/summary", async (_request, reply) => {
+  try {
+    return await store.localProfileSummary();
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/local-profile/import", async (_request, reply) => {
+  if (runningTurns.size) return reply.code(409).send({ message: "请先停止正在运行的任务，再导入本机资料" });
+  try {
+    return await store.importLocalProfile();
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/cloud-sync/tasks", async (_request, reply) => {
+  if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "任务目录同步只在 Cloud 租户中可用" });
+  return store.taskSyncSnapshot();
+});
+
+app.post<{ Body: { taskId?: string; resourceVersion?: number; taskUpdatedAt?: string } }>("/api/cloud-sync/tasks/receipt", async (request, reply) => {
+  if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "任务目录同步只在 Cloud 租户中可用" });
+  const { taskId, resourceVersion, taskUpdatedAt } = request.body || {};
+  if (!taskId || !taskUpdatedAt || !Number.isSafeInteger(resourceVersion)) return reply.code(400).send({ message: "同步回执无效" });
+  try {
+    return await store.recordTaskSync(taskId, { resourceVersion: resourceVersion as number, taskUpdatedAt });
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{
+  Params: { id: string };
+  Body: { metadata?: Partial<CloudTaskMetadata>; expectedLocalUpdatedAt?: string; resourceVersion?: number };
+}>("/api/cloud-sync/tasks/:id/apply", async (request, reply) => {
+  if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "任务目录同步只在 Cloud 租户中可用" });
+  const { metadata, expectedLocalUpdatedAt, resourceVersion } = request.body || {};
+  if (!metadata || typeof metadata.title !== "string" || typeof metadata.pinned !== "boolean"
+    || typeof metadata.archived !== "boolean" || typeof metadata.updatedAt !== "string"
+    || !expectedLocalUpdatedAt || !Number.isSafeInteger(resourceVersion)) {
+    return reply.code(400).send({ message: "云端任务目录信息无效" });
+  }
+  try {
+    return await store.applyCloudTaskMetadata(
+      request.params.id,
+      metadata as CloudTaskMetadata,
+      expectedLocalUpdatedAt,
+      resourceVersion as number,
+    );
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post<{ Body: { title?: string } }>("/api/tasks", async (request, reply) => {

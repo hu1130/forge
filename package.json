@@ -1,6 +1,6 @@
 {
   "name": "local-codex-like",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -14,6 +14,7 @@
     "p0:probe": "node ./spikes/app-server/handshake.mjs",
     "queue:probe": "pnpm --filter @forge/daemon build && node ./spikes/app-server/queue-probe.mjs",
     "test": "pnpm --filter @forge/cloud-api build && pnpm --filter @forge/daemon build && node --test ./tests/**/*.test.mjs",
+    "test:postgres": "pnpm --filter @forge/cloud-api build && node ./scripts/verify-postgres-tenant-isolation.mjs",
     "capture:ui": "pnpm --filter @forge/desktop exec electron ../../scripts/capture-web-ui.cjs"
   },
   "devDependencies": {

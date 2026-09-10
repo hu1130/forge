@@ -1,6 +1,6 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.12 在 Cloud 账户基础上加入租户工作区隔离，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.13 在租户隔离基础上加入用户主动导入和冲突安全的云端任务目录同步，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
@@ -11,6 +11,9 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 - Electron 主进程使用 HttpOnly 会话向 Cloud API 复核用户和租户，渲染器不能指定租户 ID；验证后 Daemon 才切换租户资料
 - 项目、任务、Skill、MCP 配置和 MCP 加密令牌按租户物理分目录；退出 Cloud 账户后切回原有本机资料
 - PostgreSQL 租户资源登记表、服务端身份派生 API 与强制 Row-Level Security；只允许项目、任务、Skill、MCP 的非敏感元数据
+- “设置 → 账户与云端”可主动把免登录任务复制到当前租户；原资料不会删除，同一来源任务不会重复导入，模型会话和等待队列不会迁移
+- 任务名称、置顶、归档状态和更新时间可手动同步到 Cloud；本机同步回执用于区分单边变化，双边变化必须由用户选择版本
+- 云端独有目录不会伪装成可继续执行的空任务；代码、工作区路径、完整对话、终端输出和密钥始终不进入任务目录 API
 - 项目文件夹选择，以及按项目和租户隔离的本地任务列表
 - 新建、搜索、置顶、重命名、归档、恢复和永久删除任务
 - DeepSeek 多轮会话；Daemon 重启后可恢复同一 App Server 线程
@@ -42,7 +45,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.12.0.exe
+release/Forge-Setup-0.13.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -57,7 +60,7 @@ Skill 导入的是一份 Forge 管理的副本，删除不会修改原始文件�
 
 当前安装包尚未购买代码签名证书，因此 Windows 可能显示“未知发布者”或 SmartScreen 提示。公开销售前必须完成 Authenticode 代码签名；此包适合本机验收和小范围测试。
 
-免登录资料默认保存在 `%APPDATA%\Forge\daemon\state.json`；Cloud 资料保存在 `%APPDATA%\Forge\daemon\tenants\<租户哈希>\`。每个任务文件均保留备份，损坏数据会改名隔离。加密后的密钥保存在 `%APPDATA%\Forge\secure-config.json`，其中 MCP Token 按租户分组。升级后不会自动把原有本机资料合并到 Cloud 租户，退出登录仍可访问原资料。
+免登录资料默认保存在 `%APPDATA%\Forge\daemon\state.json`；Cloud 资料保存在 `%APPDATA%\Forge\daemon\tenants\<租户哈希>\`。每个任务文件均保留备份，损坏数据会改名隔离。加密后的密钥保存在 `%APPDATA%\Forge\secure-config.json`，其中 MCP Token 按租户分组。升级后不会自动合并原有本机资料；用户可在“设置 → 账户与云端”明确触发复制，退出登录后仍可访问原资料。
 
 ## 开发运行
 
@@ -85,12 +88,13 @@ Cloud API 只连接 PostgreSQL，不会自动降级到 SQLite 或普通 JSON 文
 
 ```powershell
 docker compose up -d postgres
+docker compose run --rm postgres-role
 pnpm dev:cloud
 ```
 
-浏览器打开 `http://127.0.0.1:5173/?cloud=1`。开发默认连接非超级用户 `postgresql://forge_app:forge_app_dev_only@127.0.0.1:54329/forge`，以便实际执行 RLS；部署时必须通过 `DATABASE_URL` 使用 `NOSUPERUSER NOBYPASSRLS` 的独立生产角色，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
+浏览器打开 `http://127.0.0.1:5173/?cloud=1`。`postgres-role` 会为新旧开发卷幂等配置非超级应用角色；Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接 `DATABASE_URL` 中的 `NOSUPERUSER NOBYPASSRLS` 角色。部署时应使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
-`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；Cloud 资源 API 只登记白名单元数据，桌面端尚未自动上传或跨设备恢复这些元数据。
+`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；用户可手动同步白名单任务目录元数据，但不会跨设备恢复完整任务。
 
 ## 构建 Windows 安装包
 
@@ -106,6 +110,7 @@ pnpm dist:win
 
 ```powershell
 pnpm test
+pnpm test:postgres
 pnpm typecheck
 pnpm build
 node scripts/smoke-packaged-daemon.mjs
@@ -113,7 +118,7 @@ node scripts/verify-packaged-extensions.mjs
 node scripts/verify-packaged-mcp-call.mjs
 ```
 
-当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、原有本机资料的一键导入、跨设备云同步与冲突处理、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
+当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、跨设备完整任务恢复、Skill/MCP 云目录同步、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
 
 ### 发布远程市场目录
 

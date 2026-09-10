@@ -4,7 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply } from "fastify";
 import type { CloudAuthSession } from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
-import { TenantAccessError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
+import { TenantAccessError, TenantVersionConflictError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
 
 export interface CloudApiOptions {
   store: AuthStore;
@@ -125,7 +125,7 @@ export async function createCloudApi(options: CloudApiOptions) {
     }
   });
 
-  app.put<{ Params: { kind: string; key: string }; Body: { payload?: unknown } }>("/v1/tenant/resources/:kind/:key", async (request, reply) => {
+  app.put<{ Params: { kind: string; key: string }; Body: { payload?: unknown; expectedVersion?: number } }>("/v1/tenant/resources/:kind/:key", async (request, reply) => {
     if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
     const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
     if (!session) return reply.code(401).send({ message: "请先登录" });
@@ -135,14 +135,19 @@ export async function createCloudApi(options: CloudApiOptions) {
     }
     const kind = tenantResourceKind(request.params.kind);
     if (!kind) return reply.code(400).send({ message: "租户资源类型无效" });
+    const expectedVersion = request.body?.expectedVersion;
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)) {
+      return reply.code(400).send({ message: "云端资源版本无效" });
+    }
     try {
       const resource = await options.tenantStore.upsertResource(
         { tenantId: session.tenant.id, userId: session.user.id },
-        { kind, key: tenantResourceKey(request.params.key), payload: tenantResourcePayload(kind, request.body?.payload) },
+        { kind, key: tenantResourceKey(request.params.key), payload: tenantResourcePayload(kind, request.body?.payload), expectedVersion },
       );
       return resource;
     } catch (error) {
       if (error instanceof TenantAccessError) return reply.code(403).send({ message: error.message });
+      if (error instanceof TenantVersionConflictError) return reply.code(409).send({ message: error.message, current: error.current });
       if (error instanceof Error && /租户资源/.test(error.message)) return reply.code(400).send({ message: error.message });
       request.log.error(error);
       return reply.code(500).send({ message: "暂时无法保存租户数据" });

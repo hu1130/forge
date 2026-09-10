@@ -257,7 +257,7 @@ function parseSseChunk(buffer: string) {
 
 type AuthenticatedCloudSession = Extract<CloudAuthSession, { authenticated: true }>;
 
-function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: AuthenticatedCloudSession; onCloudLogout: () => Promise<void> }) {
+function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSession?: AuthenticatedCloudSession; cloudApiBase: string; onCloudLogout: () => Promise<void> }) {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [providerId, setProviderId] = useState("");
@@ -982,6 +982,7 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
         apiKeyMessage={apiKeyMessage}
         apiKeyTone={apiKeyTone}
         encryptedStorageAvailable={encryptedStorageAvailable}
+        cloudWorkspace={cloudSession ? { session: cloudSession, cloudApiBase, anyTaskRunning, onTasksChanged: refresh } : undefined}
         onApiKeyDraftChange={setApiKeyDraft}
         onTestApiKey={() => void testDeepSeekApiKey()}
         onSaveApiKey={() => void saveDeepSeekApiKey()}
@@ -1007,5 +1008,5 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
 }
 
 export function App() {
-  return <CloudAuthGate>{({ session, logout }) => <WorkspaceApp cloudSession={session} onCloudLogout={logout} />}</CloudAuthGate>;
+  return <CloudAuthGate>{({ session, cloudApiBase, logout }) => <WorkspaceApp cloudSession={session} cloudApiBase={cloudApiBase} onCloudLogout={logout} />}</CloudAuthGate>;
 }

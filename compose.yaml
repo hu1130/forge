@@ -16,5 +16,17 @@ services:
       - forge-postgres-data:/var/lib/postgresql
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
 
+  postgres-role:
+    image: postgres:18-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: forge_dev_only
+    volumes:
+      - ./infra/postgres/init:/bootstrap:ro
+    command: ["psql", "-h", "postgres", "-U", "forge", "-d", "forge", "-f", "/bootstrap/001_app_role.sql"]
+    restart: "no"
+
 volumes:
   forge-postgres-data:

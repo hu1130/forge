@@ -1,6 +1,6 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.11 新增了可独立部署的 Cloud API 与多用户/个人租户基础，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.12 在 Cloud 账户基础上加入租户工作区隔离，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
@@ -8,7 +8,10 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 - PostgreSQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
 - 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，浏览器使用 HttpOnly Cookie 和 CSRF 令牌
 - 可选 Cloud 登录界面及工作台账户入口；未设置 Cloud API URL 时保持原有单机行为
-- 项目文件夹选择，以及按项目隔离的本地任务列表
+- Electron 主进程使用 HttpOnly 会话向 Cloud API 复核用户和租户，渲染器不能指定租户 ID；验证后 Daemon 才切换租户资料
+- 项目、任务、Skill、MCP 配置和 MCP 加密令牌按租户物理分目录；退出 Cloud 账户后切回原有本机资料
+- PostgreSQL 租户资源登记表、服务端身份派生 API 与强制 Row-Level Security；只允许项目、任务、Skill、MCP 的非敏感元数据
+- 项目文件夹选择，以及按项目和租户隔离的本地任务列表
 - 新建、搜索、置顶、重命名、归档、恢复和永久删除任务
 - DeepSeek 多轮会话；Daemon 重启后可恢复同一 App Server 线程
 - 可从当前工作区搜索并选择最多 20 个上下文文件；路径随本轮消息保留，Agent 会优先读取，疑似密钥、越界路径和超大文件由 Daemon 拒绝
@@ -39,7 +42,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.11.0.exe
+release/Forge-Setup-0.12.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -54,7 +57,7 @@ Skill 导入的是一份 Forge 管理的副本，删除不会修改原始文件�
 
 当前安装包尚未购买代码签名证书，因此 Windows 可能显示“未知发布者”或 SmartScreen 提示。公开销售前必须完成 Authenticode 代码签名；此包适合本机验收和小范围测试。
 
-本地任务数据默认保存在 `%APPDATA%\Forge\daemon\state.json`，上一个有效快照保存在 `state.json.bak`；无法解析的数据会改名隔离为 `state.json.corrupt-*.json`。加密后的密钥保存在 `%APPDATA%\Forge\secure-config.json`。
+免登录资料默认保存在 `%APPDATA%\Forge\daemon\state.json`；Cloud 资料保存在 `%APPDATA%\Forge\daemon\tenants\<租户哈希>\`。每个任务文件均保留备份，损坏数据会改名隔离。加密后的密钥保存在 `%APPDATA%\Forge\secure-config.json`，其中 MCP Token 按租户分组。升级后不会自动把原有本机资料合并到 Cloud 租户，退出登录仍可访问原资料。
 
 ## 开发运行
 
@@ -85,9 +88,9 @@ docker compose up -d postgres
 pnpm dev:cloud
 ```
 
-浏览器打开 `http://127.0.0.1:5173/?cloud=1`。开发默认连接 `postgresql://forge:forge_dev_only@127.0.0.1:54329/forge`；部署时必须通过 `DATABASE_URL` 使用独立生产凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
+浏览器打开 `http://127.0.0.1:5173/?cloud=1`。开发默认连接非超级用户 `postgresql://forge_app:forge_app_dev_only@127.0.0.1:54329/forge`，以便实际执行 RLS；部署时必须通过 `DATABASE_URL` 使用 `NOSUPERUSER NOBYPASSRLS` 的独立生产角色，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
-`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前本机任务仍保存在本地 Daemon；将任务、Skill、MCP 与用量数据迁移为租户数据属于下一阶段。
+`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；Cloud 资源 API 只登记白名单元数据，桌面端尚未自动上传或跨设备恢复这些元数据。
 
 ## 构建 Windows 安装包
 
@@ -110,7 +113,7 @@ node scripts/verify-packaged-extensions.mjs
 node scripts/verify-packaged-mcp-call.mjs
 ```
 
-当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、租户任务/Skill/MCP 数据迁移、云端 Agent Worker 隔离、云同步、额度与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
+当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、原有本机资料的一键导入、跨设备云同步与冲突处理、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
 
 ### 发布远程市场目录
 

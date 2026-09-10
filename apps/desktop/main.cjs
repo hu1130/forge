@@ -7,8 +7,11 @@ const path = require("node:path");
 app.setName("Forge");
 
 const webUrl = process.env.FORGE_WEB_URL || (app.isPackaged ? "http://127.0.0.1:4782" : "http://127.0.0.1:5173");
+const cloudApiUrl = (process.env.FORGE_CLOUD_API_URL?.trim() || "").replace(/\/$/, "");
 const smokeTest = process.env.FORGE_SMOKE_TEST === "1";
 const apiToken = process.env.FORGE_API_TOKEN?.trim() || randomBytes(32).toString("base64url");
+const localIdentity = { tenantId: "local", userId: "local", mode: "local" };
+let activeIdentity = localIdentity;
 let daemonProcess = null;
 let daemonFailure = "";
 
@@ -85,7 +88,10 @@ function mcpTokenEnvVar(name) {
 
 function readMcpTokens() {
   if (!safeStorage.isEncryptionAvailable()) return {};
-  const encryptedTokens = readSecureConfig().mcpTokens;
+  const config = readSecureConfig();
+  const encryptedTokens = activeIdentity.mode === "local"
+    ? config.mcpTokens
+    : config.mcpTokensByTenant?.[activeIdentity.tenantId];
   if (!encryptedTokens || typeof encryptedTokens !== "object" || Array.isArray(encryptedTokens)) return {};
   const tokens = {};
   for (const [name, encrypted] of Object.entries(encryptedTokens)) {
@@ -103,8 +109,20 @@ function writeMcpToken(name, token) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const config = readSecureConfig();
   config.version = 1;
-  config.mcpTokens = config.mcpTokens && typeof config.mcpTokens === "object" && !Array.isArray(config.mcpTokens) ? config.mcpTokens : {};
-  config.mcpTokens[name] = safeStorage.encryptString(token).toString("base64");
+  let tokens;
+  if (activeIdentity.mode === "local") {
+    config.mcpTokens = config.mcpTokens && typeof config.mcpTokens === "object" && !Array.isArray(config.mcpTokens) ? config.mcpTokens : {};
+    tokens = config.mcpTokens;
+  } else {
+    config.mcpTokensByTenant = config.mcpTokensByTenant && typeof config.mcpTokensByTenant === "object" && !Array.isArray(config.mcpTokensByTenant) ? config.mcpTokensByTenant : {};
+    config.mcpTokensByTenant[activeIdentity.tenantId] = config.mcpTokensByTenant[activeIdentity.tenantId]
+      && typeof config.mcpTokensByTenant[activeIdentity.tenantId] === "object"
+      && !Array.isArray(config.mcpTokensByTenant[activeIdentity.tenantId])
+      ? config.mcpTokensByTenant[activeIdentity.tenantId]
+      : {};
+    tokens = config.mcpTokensByTenant[activeIdentity.tenantId];
+  }
+  tokens[name] = safeStorage.encryptString(token).toString("base64");
   const temporary = `${filePath}.tmp`;
   writeFileSync(temporary, JSON.stringify(config), { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, filePath);
@@ -113,8 +131,9 @@ function writeMcpToken(name, token) {
 function deleteMcpToken(name) {
   const filePath = secureConfigPath();
   const config = readSecureConfig();
-  if (!config.mcpTokens || typeof config.mcpTokens !== "object" || Array.isArray(config.mcpTokens) || !(name in config.mcpTokens)) return;
-  delete config.mcpTokens[name];
+  const tokens = activeIdentity.mode === "local" ? config.mcpTokens : config.mcpTokensByTenant?.[activeIdentity.tenantId];
+  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens) || !(name in tokens)) return;
+  delete tokens[name];
   const temporary = `${filePath}.tmp`;
   writeFileSync(temporary, JSON.stringify(config), { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, filePath);
@@ -144,6 +163,8 @@ function startDaemon() {
     FORGE_WORKSPACE: app.getPath("documents"),
     FORGE_CODEX_BIN: codex,
     FORGE_API_TOKEN: apiToken,
+    FORGE_TENANT_ID: activeIdentity.mode === "cloud" ? activeIdentity.tenantId : "",
+    FORGE_USER_ID: activeIdentity.mode === "cloud" ? activeIdentity.userId : "",
     DEEPSEEK_API_KEY: apiKey || "",
   };
   for (const [name, token] of Object.entries(readMcpTokens())) daemonEnvironment[mcpTokenEnvVar(name)] = token;
@@ -194,6 +215,50 @@ async function waitForDaemon(timeoutMs = 20_000) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("Forge Daemon 启动超时");
+}
+
+function validCloudId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function verifiedCloudIdentity() {
+  if (!cloudApiUrl) throw new Error("Forge Cloud API 尚未配置");
+  let target;
+  try { target = new URL(cloudApiUrl); } catch { throw new Error("Forge Cloud API 地址无效"); }
+  if (!(["http:", "https:"]).includes(target.protocol)) throw new Error("Forge Cloud API 地址只支持 HTTP 或 HTTPS");
+  if (app.isPackaged && target.protocol !== "https:" && !["127.0.0.1", "localhost"].includes(target.hostname)) {
+    throw new Error("安装版连接远程 Forge Cloud 时必须使用 HTTPS");
+  }
+  const cookies = await session.defaultSession.cookies.get({ url: target.href });
+  const cookieHeader = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+  if (!cookieHeader) throw new Error("Forge Cloud 登录会话不存在");
+  const response = await fetch(`${cloudApiUrl}/v1/auth/session`, {
+    headers: { cookie: cookieHeader },
+    redirect: "error",
+    signal: AbortSignal.timeout(12_000),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.authenticated || !validCloudId(payload.user?.id) || !validCloudId(payload.tenant?.id)) {
+    throw new Error("Forge Cloud 无法验证当前租户会话");
+  }
+  return { tenantId: payload.tenant.id, userId: payload.user.id, mode: "cloud" };
+}
+
+async function switchIdentity(nextIdentity) {
+  if (activeIdentity.tenantId === nextIdentity.tenantId && activeIdentity.userId === nextIdentity.userId) {
+    return { identity: activeIdentity, restarted: false };
+  }
+  const previousIdentity = activeIdentity;
+  activeIdentity = nextIdentity;
+  try {
+    const restarted = await restartDaemon();
+    if (restarted) await waitForDaemon();
+    return { identity: activeIdentity, restarted };
+  } catch (error) {
+    activeIdentity = previousIdentity;
+    await restartDaemon().then(async (restarted) => { if (restarted) await waitForDaemon(); }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function createWindow() {
@@ -295,6 +360,14 @@ async function initializeApp() {
     const restarted = await restartDaemon();
     if (restarted) await waitForDaemon();
     return { restarted };
+  });
+  ipcMain.handle("forge:activate-cloud-context", async (event) => {
+    assertTrustedSender(event);
+    return switchIdentity(await verifiedCloudIdentity());
+  });
+  ipcMain.handle("forge:activate-local-context", async (event) => {
+    assertTrustedSender(event);
+    return switchIdentity(localIdentity);
   });
 
   if (app.isPackaged) {

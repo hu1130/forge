@@ -1,24 +1,30 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Activity, ForgeTask, QueuedTurn } from "@forge/contracts";
+import type { Activity, ForgeIdentityContext, ForgeTask, QueuedTurn } from "@forge/contracts";
 
 interface PersistedState {
-  schemaVersion: 2;
-  tenantId: "local";
-  userId: "local";
+  schemaVersion: number;
+  tenantId: string;
+  userId: string;
   workspacePath: string;
   tasks: ForgeTask[];
 }
 
 const now = () => new Date().toISOString();
 
-function seedState(workspacePath: string): PersistedState {
+const localIdentity: ForgeIdentityContext = { tenantId: "local", userId: "local", mode: "local" };
+
+export function tenantStorageKey(tenantId: string) {
+  return createHash("sha256").update(tenantId).digest("hex").slice(0, 24);
+}
+
+function seedState(workspacePath: string, identity: ForgeIdentityContext): PersistedState {
   return {
-    schemaVersion: 2,
-    tenantId: "local",
-    userId: "local",
+    schemaVersion: 3,
+    tenantId: identity.tenantId,
+    userId: identity.userId,
     workspacePath,
     tasks: [],
   };
@@ -29,10 +35,12 @@ export class TaskStore {
   private readonly filePath: string;
   private persistQueue = Promise.resolve();
 
-  constructor(private readonly defaultWorkspacePath: string) {
-    this.state = seedState(defaultWorkspacePath);
+  constructor(private readonly defaultWorkspacePath: string, private readonly identity: ForgeIdentityContext = localIdentity) {
+    this.state = seedState(defaultWorkspacePath, identity);
     const dataDir = process.env.FORGE_DATA_DIR || path.join(os.homedir(), ".forge");
-    this.filePath = path.join(dataDir, "state.json");
+    this.filePath = identity.mode === "local"
+      ? path.join(dataDir, "state.json")
+      : path.join(dataDir, "tenants", tenantStorageKey(identity.tenantId), "state.json");
   }
 
   async load() {
@@ -40,6 +48,7 @@ export class TaskStore {
     let loaded: Partial<PersistedState>;
     try {
       loaded = this.parseState(await readFile(this.filePath, "utf8"));
+      this.assertStoredIdentity(loaded);
     } catch (error) {
       if (this.errorCode(error) === "ENOENT") {
         await this.persist();
@@ -49,24 +58,31 @@ export class TaskStore {
       await rename(this.filePath, quarantinedPath);
       try {
         loaded = this.parseState(await readFile(`${this.filePath}.bak`, "utf8"));
+        this.assertStoredIdentity(loaded);
       } catch (backupError) {
         if (this.errorCode(backupError) !== "ENOENT") {
           const backupPath = `${this.filePath}.bak.corrupt-${Date.now()}-${randomUUID()}.json`;
           await rename(`${this.filePath}.bak`, backupPath);
         }
-        loaded = seedState(this.defaultWorkspacePath);
+        loaded = seedState(this.defaultWorkspacePath, this.identity);
       }
     }
 
     const workspacePath = loaded.workspacePath || this.defaultWorkspacePath;
-    const migratingToIsolatedRuntime = loaded.schemaVersion !== 2;
+    const migratingToIsolatedRuntime = loaded.schemaVersion !== 2 && loaded.schemaVersion !== 3;
     this.state = {
-      schemaVersion: 2,
-      tenantId: "local",
-      userId: "local",
+      schemaVersion: 3,
+      tenantId: this.identity.tenantId,
+      userId: this.identity.userId,
       workspacePath,
       tasks: (loaded.tasks || []).map((task) => {
-        const migrated: ForgeTask = { ...task, workspacePath: task.workspacePath || workspacePath, queuedTurns: task.queuedTurns || [] };
+        const migrated: ForgeTask = {
+          ...task,
+          tenantId: this.identity.tenantId,
+          userId: loaded.schemaVersion === 3 && task.userId ? task.userId : this.identity.userId,
+          workspacePath: task.workspacePath || workspacePath,
+          queuedTurns: task.queuedTurns || [],
+        };
         if (migratingToIsolatedRuntime && migrated.agentSession) {
           delete migrated.agentSession;
           migrated.activities = [...migrated.activities, {
@@ -99,6 +115,12 @@ export class TaskStore {
     return parsed;
   }
 
+  private assertStoredIdentity(state: Partial<PersistedState>) {
+    if (this.identity.mode === "cloud" && state.schemaVersion === 3 && state.tenantId !== this.identity.tenantId) {
+      throw new Error("Forge 租户任务数据身份不匹配");
+    }
+  }
+
   private errorCode(error: unknown) {
     return error && typeof error === "object" && "code" in error ? String(error.code) : "";
   }
@@ -110,6 +132,10 @@ export class TaskStore {
 
   workspace() {
     return this.state.workspacePath;
+  }
+
+  identityContext() {
+    return { ...this.identity };
   }
 
   async setWorkspace(workspacePath: string) {
@@ -124,8 +150,8 @@ export class TaskStore {
   async create(title = "新任务", workspacePath = this.state.workspacePath) {
     const task: ForgeTask = {
       id: randomUUID(),
-      tenantId: "local",
-      userId: "local",
+      tenantId: this.identity.tenantId,
+      userId: this.identity.userId,
       title,
       subtitle: "尚未开始",
       workspacePath,

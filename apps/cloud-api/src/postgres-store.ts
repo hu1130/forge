@@ -1,7 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
+import type { CloudTenantResource, CloudTenantResourceKind } from "@forge/contracts";
 import { DuplicateEmailError, type AuthStore, type StoredSession, type StoredUser } from "./auth-service.js";
+import { TenantAccessError, type TenantPrincipal, type TenantResourceStore } from "./tenant-resources.js";
 
 interface SessionRow {
   token_hash: string;
@@ -15,6 +17,30 @@ interface SessionRow {
   tenant_name: string;
   tenant_slug: string;
   role: "owner" | "admin" | "member";
+}
+
+interface TenantResourceRow {
+  kind: CloudTenantResourceKind;
+  resource_key: string;
+  owner_user_id: string;
+  updated_by_user_id: string;
+  payload: Record<string, unknown>;
+  version: string | number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function mapTenantResource(row: TenantResourceRow): CloudTenantResource {
+  return {
+    kind: row.kind,
+    key: row.resource_key,
+    ownerUserId: row.owner_user_id,
+    updatedByUserId: row.updated_by_user_id,
+    payload: row.payload,
+    version: Number(row.version),
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
 }
 
 function mapSession(row: SessionRow): StoredSession {
@@ -44,7 +70,7 @@ const SESSION_QUERY = `
     JOIN forge_tenant_memberships m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
 `;
 
-export class PostgresAuthStore implements AuthStore {
+export class PostgresAuthStore implements AuthStore, TenantResourceStore {
   constructor(readonly pool: Pool) {}
 
   async createAccount(input: { userId: string; tenantId: string; email: string; displayName: string; passwordHash: string; tenantName: string; tenantSlug: string }) {
@@ -123,6 +149,73 @@ export class PostgresAuthStore implements AuthStore {
     await this.pool.query("UPDATE forge_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL", [tokenHash]);
   }
 
+  private async withTenant<T>(principal: TenantPrincipal, operation: (client: PoolClient) => Promise<T>) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('forge.tenant_id', $1, true), set_config('forge.user_id', $2, true)", [principal.tenantId, principal.userId]);
+      const membership = await client.query(
+        "SELECT 1 FROM forge_tenant_memberships WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'",
+        [principal.tenantId, principal.userId],
+      );
+      if (!membership.rowCount) throw new TenantAccessError("当前账户无权访问该租户");
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listResources(principal: TenantPrincipal, kind?: CloudTenantResourceKind) {
+    return this.withTenant(principal, async (client) => {
+      const result = kind
+        ? await client.query<TenantResourceRow>(`
+            SELECT kind, resource_key, owner_user_id, updated_by_user_id, payload, version, created_at, updated_at
+              FROM forge_tenant_resources
+             WHERE tenant_id = $1 AND kind = $2
+             ORDER BY updated_at DESC
+          `, [principal.tenantId, kind])
+        : await client.query<TenantResourceRow>(`
+            SELECT kind, resource_key, owner_user_id, updated_by_user_id, payload, version, created_at, updated_at
+              FROM forge_tenant_resources
+             WHERE tenant_id = $1
+             ORDER BY updated_at DESC
+          `, [principal.tenantId]);
+      return result.rows.map(mapTenantResource);
+    });
+  }
+
+  async upsertResource(principal: TenantPrincipal, input: { kind: CloudTenantResourceKind; key: string; payload: Record<string, unknown> }) {
+    return this.withTenant(principal, async (client) => {
+      const result = await client.query<TenantResourceRow>(`
+        INSERT INTO forge_tenant_resources
+          (tenant_id, kind, resource_key, owner_user_id, updated_by_user_id, payload)
+        VALUES ($1, $2, $3, $4, $4, $5)
+        ON CONFLICT (tenant_id, kind, resource_key) DO UPDATE
+          SET payload = EXCLUDED.payload,
+              updated_by_user_id = EXCLUDED.updated_by_user_id,
+              version = forge_tenant_resources.version + 1,
+              updated_at = now()
+        RETURNING kind, resource_key, owner_user_id, updated_by_user_id, payload, version, created_at, updated_at
+      `, [principal.tenantId, input.kind, input.key, principal.userId, input.payload]);
+      return mapTenantResource(result.rows[0]);
+    });
+  }
+
+  async deleteResource(principal: TenantPrincipal, kind: CloudTenantResourceKind, key: string) {
+    return this.withTenant(principal, async (client) => {
+      const result = await client.query(
+        "DELETE FROM forge_tenant_resources WHERE tenant_id = $1 AND kind = $2 AND resource_key = $3",
+        [principal.tenantId, kind, key],
+      );
+      return Boolean(result.rowCount);
+    });
+  }
+
   async health() {
     await this.pool.query("SELECT 1");
   }
@@ -133,6 +226,9 @@ export class PostgresAuthStore implements AuthStore {
 }
 
 export async function migrateDatabase(client: Pool | PoolClient) {
-  const migrationPath = path.resolve(import.meta.dirname, "../migrations/001_identity.sql");
-  await client.query(await readFile(migrationPath, "utf8"));
+  const migrationsPath = path.resolve(import.meta.dirname, "../migrations");
+  const migrations = (await readdir(migrationsPath)).filter((name) => /^\d+_.+\.sql$/.test(name)).sort();
+  for (const migration of migrations) {
+    await client.query(await readFile(path.join(migrationsPath, migration), "utf8"));
+  }
 }

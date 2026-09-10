@@ -300,6 +300,9 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
     const response = await fetch("/api/bootstrap");
     if (!response.ok) throw new Error("无法连接 Forge Daemon");
     const payload = (await response.json()) as BootstrapPayload;
+    if (cloudSession && (payload.identity.tenantId !== cloudSession.tenant.id || payload.identity.userId !== cloudSession.user.id)) {
+      throw new Error("Forge Daemon 未进入当前租户，请退出后重新登录");
+    }
     setBootstrap(payload);
     setApprovals(payload.approvals);
     setSelectedTaskId((current) => payload.tasks.some((task) => task.id === current) ? current : payload.tasks.find((task) => !task.archived)?.id || "");
@@ -323,6 +326,7 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
   const selectedTask = useMemo(() => viewTasks.find((task) => task.id === selectedTaskId) || viewTasks[0], [selectedTaskId, viewTasks]);
   const selectedProvider = bootstrap?.providers.find((provider) => provider.id === providerId) || bootstrap?.providers[0];
   const taskRunning = selectedTask?.state === "running" || sending;
+  const anyTaskRunning = (bootstrap?.tasks || []).some((task) => task.state === "running") || sending;
   const timeline = useMemo(() => groupActivities(selectedTask?.activities || []), [selectedTask?.activities]);
   const visibleTasks = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
@@ -826,7 +830,7 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
   if (!bootstrap) {
     return (
       <main className="loading-screen"><ForgeMark />{error
-        ? <><h1>Daemon 未连接</h1><p>{error}</p><button onClick={() => location.reload()}>重新连接</button></>
+        ? <><h1>工作区暂不可用</h1><p>{error}</p><button onClick={() => location.reload()}>重新连接</button></>
         : <><LoaderCircle className="spin" /><p>正在连接本机服务…</p></>}</main>
     );
   }
@@ -875,12 +879,12 @@ function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: Authenti
                 <strong>{task.pinned && <Pin size={11} />}{task.title}</strong><span>{task.state === "running" && <i className="live-dot" />}{task.subtitle}</span>
               </button>
             ))}
-            {!visibleTasks.length && <p className="task-empty">{searchQuery ? "没有匹配的任务" : showArchived ? "还没有归档任务" : "还没有任务"}</p>}
+            {!visibleTasks.length && <p className="task-empty">{searchQuery ? "没有匹配的任务" : showArchived ? "还没有归档任务" : cloudSession ? "这个租户还没有任务，本机免登录记录不会自动合并" : "还没有任务"}</p>}
           </div>
         </section>
-        {cloudSession && <button className="sidebar-account" type="button" aria-label={`退出 ${cloudSession.user.displayName} 的账户`} title={`${cloudSession.user.email} · ${cloudSession.tenant.name}`} disabled={cloudLogoutBusy} onClick={() => void logoutCloudAccount()}>
+        {cloudSession && <button className="sidebar-account" type="button" aria-label={anyTaskRunning ? "请先停止正在运行的任务再退出账户" : `退出 ${cloudSession.user.displayName} 的账户`} title={anyTaskRunning ? "请先停止正在运行的任务再退出" : `${cloudSession.user.email} · ${cloudSession.tenant.name} · ${cloudSession.tenant.role}`} disabled={cloudLogoutBusy || anyTaskRunning} onClick={() => void logoutCloudAccount()}>
           <span>{cloudSession.user.displayName.slice(0, 1).toLocaleUpperCase()}</span>
-          <span><strong>{cloudSession.user.displayName}</strong><small>{cloudSession.tenant.name}</small></span>
+          <span><strong>{cloudSession.user.displayName}</strong><small>{cloudSession.tenant.name} · 已隔离</small></span>
           <LogOut size={15} aria-hidden="true" />
         </button>}
         <button className="sidebar-settings" onClick={() => setSettingsOpen(true)}><Settings size={17} />设置</button>

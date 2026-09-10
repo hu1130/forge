@@ -18,6 +18,14 @@ async function authRequest(base: string, path: string, init?: RequestInit) {
   return fetch(`${base}${path}`, { ...init, credentials: "include" });
 }
 
+async function activateDesktopTenant(session: AuthenticatedSession) {
+  if (!window.forgeDesktop?.activateCloudContext) return;
+  const activated = await window.forgeDesktop.activateCloudContext();
+  if (activated.identity.tenantId !== session.tenant.id || activated.identity.userId !== session.user.id) {
+    throw new Error("本机运行时与 Forge Cloud 租户不一致");
+  }
+}
+
 export default function CloudAuthGate({ children }: CloudAuthGateProps) {
   const [base] = useState(configuredCloudApiBase);
   const [session, setSession] = useState<CloudAuthSession | null>(base ? null : { authenticated: false });
@@ -37,7 +45,9 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
     authRequest(base, "/v1/auth/session", { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("账户服务暂时不可用");
-        setSession(await response.json() as CloudAuthSession);
+        const payload = await response.json() as CloudAuthSession;
+        if (payload.authenticated) await activateDesktopTenant(payload);
+        setSession(payload);
       })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
@@ -61,6 +71,7 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
         const payload = await response.json().catch(() => ({})) as { message?: string };
         throw new Error(payload.message || "退出登录失败");
       }
+      await window.forgeDesktop?.activateLocalContext?.();
       setSession({ authenticated: false });
       setMode("login");
       setEmail("");
@@ -83,6 +94,7 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
       });
       const payload = await response.json().catch(() => ({})) as CloudAuthSession & { message?: string };
       if (!response.ok || !payload.authenticated) throw new Error(payload.message || (mode === "login" ? "登录失败" : "注册失败"));
+      await activateDesktopTenant(payload);
       setSession(payload);
       setPassword("");
     } catch (reason) {
@@ -108,7 +120,7 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
       </section>
       <section className="cloud-auth-panel" aria-labelledby="cloud-auth-title">
         <div className="cloud-auth-card">
-          <span className="cloud-auth-step">0.11 多用户基础</span>
+          <span className="cloud-auth-step">0.12 租户工作区</span>
           <h2 id="cloud-auth-title">{mode === "login" ? "登录 Forge" : "创建 Forge 账户"}</h2>
           <p>{mode === "login" ? "继续进入你的个人工作区" : "注册后会自动创建一个隔离的个人租户"}</p>
           <form onSubmit={submit} noValidate>

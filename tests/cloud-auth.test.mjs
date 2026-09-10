@@ -57,6 +57,38 @@ class MemoryAuthStore {
   }
 }
 
+class MemoryTenantStore {
+  resources = new Map();
+
+  async listResources(principal, kind) {
+    return [...this.resources.values()].filter((resource) => resource.tenantId === principal.tenantId && (!kind || resource.kind === kind)).map(({ tenantId: _tenantId, ...resource }) => resource);
+  }
+
+  async upsertResource(principal, input) {
+    const mapKey = `${principal.tenantId}:${input.kind}:${input.key}`;
+    const existing = this.resources.get(mapKey);
+    const timestamp = new Date().toISOString();
+    const stored = {
+      tenantId: principal.tenantId,
+      kind: input.kind,
+      key: input.key,
+      ownerUserId: existing?.ownerUserId || principal.userId,
+      updatedByUserId: principal.userId,
+      payload: input.payload,
+      version: (existing?.version || 0) + 1,
+      createdAt: existing?.createdAt || timestamp,
+      updatedAt: timestamp,
+    };
+    this.resources.set(mapKey, stored);
+    const { tenantId: _tenantId, ...resource } = stored;
+    return resource;
+  }
+
+  async deleteResource(principal, kind, key) {
+    return this.resources.delete(`${principal.tenantId}:${kind}:${key}`);
+  }
+}
+
 function sessionCookie(response) {
   const header = response.headers["set-cookie"];
   assert.equal(typeof header, "string");
@@ -130,6 +162,8 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   const cloudApp = await readFile("apps/cloud-api/src/app.ts", "utf8");
   const preload = await readFile("apps/desktop/preload.cjs", "utf8");
   const migration = await readFile("apps/cloud-api/migrations/001_identity.sql", "utf8");
+  const tenantMigration = await readFile("apps/cloud-api/migrations/002_tenant_resources.sql", "utf8");
+  const postgresStore = await readFile("apps/cloud-api/src/postgres-store.ts", "utf8");
   assert.match(gate, /credentials: "include"/);
   assert.doesNotMatch(gate, /localStorage|sessionStorage/);
   assert.match(cloudApp, /httpOnly: true/);
@@ -137,6 +171,10 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   assert.match(migration, /PRIMARY KEY \(tenant_id, user_id\)/);
   assert.match(migration, /token_hash char\(64\)/);
   assert.doesNotMatch(migration, /\btoken text\b/i);
+  assert.match(tenantMigration, /ENABLE ROW LEVEL SECURITY/);
+  assert.match(tenantMigration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(tenantMigration, /current_setting\('forge\.tenant_id'/);
+  assert.match(postgresStore, /WHERE tenant_id = \$1/);
 });
 
 test("login errors do not reveal whether an account exists", async () => {
@@ -189,4 +227,75 @@ test("cross-site cookies cannot be configured without transport security", async
     }),
     /requires secure cookies/,
   );
+});
+
+test("tenant resource APIs derive ownership from each authenticated session", async () => {
+  const authStore = new MemoryAuthStore();
+  const tenantStore = new MemoryTenantStore();
+  const origin = "http://127.0.0.1:5173";
+  const app = await createCloudApi({ store: authStore, tenantStore, allowedOrigins: [origin], cookieSecure: false });
+  try {
+    const register = async (email, displayName) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/auth/register",
+        headers: { origin },
+        payload: { email, displayName, password: "correct horse battery staple" },
+      });
+      assert.equal(response.statusCode, 201);
+      return { session: response.json(), cookie: sessionCookie(response) };
+    };
+    const accountA = await register("tenant-a@example.com", "Tenant A");
+    const accountB = await register("tenant-b@example.com", "Tenant B");
+
+    const putA = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/task/shared-task-key",
+      headers: {
+        cookie: accountA.cookie,
+        origin,
+        "x-csrf-token": accountA.session.csrfToken,
+        "x-tenant-id": accountB.session.tenant.id,
+      },
+      payload: { payload: { title: "A 的任务", state: "idle" } },
+    });
+    assert.equal(putA.statusCode, 200);
+    assert.equal(putA.json().ownerUserId, accountA.session.user.id);
+
+    const putB = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/task/shared-task-key",
+      headers: { cookie: accountB.cookie, origin, "x-csrf-token": accountB.session.csrfToken },
+      payload: { payload: { title: "B 的任务", state: "idle" } },
+    });
+    assert.equal(putB.statusCode, 200);
+
+    const listA = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountA.cookie } });
+    const listB = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountB.cookie } });
+    assert.equal(listA.json().tenantId, accountA.session.tenant.id);
+    assert.equal(listB.json().tenantId, accountB.session.tenant.id);
+    assert.equal(listA.json().resources[0].payload.title, "A 的任务");
+    assert.equal(listB.json().resources[0].payload.title, "B 的任务");
+
+    const secret = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/mcp/unsafe",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: { payload: { name: "unsafe", apiKey: "must-not-sync" } },
+    });
+    assert.equal(secret.statusCode, 400);
+
+    const noCsrf = await app.inject({ method: "DELETE", url: "/v1/tenant/resources/task/shared-task-key", headers: { cookie: accountA.cookie, origin } });
+    assert.equal(noCsrf.statusCode, 403);
+    const deleteA = await app.inject({
+      method: "DELETE",
+      url: "/v1/tenant/resources/task/shared-task-key",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+    });
+    assert.equal(deleteA.statusCode, 204);
+    const afterDeleteB = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountB.cookie } });
+    assert.equal(afterDeleteB.json().resources.length, 1);
+  } finally {
+    await app.close();
+  }
 });

@@ -61,8 +61,8 @@ export type Activity =
 
 export interface ForgeTask {
   id: string;
-  tenantId: "local";
-  userId: "local";
+  tenantId: string;
+  userId: string;
   title: string;
   subtitle: string;
   workspacePath?: string;
@@ -103,6 +103,12 @@ export interface CloudTenantContext {
   role: "owner" | "admin" | "member";
 }
 
+export interface ForgeIdentityContext {
+  tenantId: string;
+  userId: string;
+  mode: "local" | "cloud";
+}
+
 export type CloudAuthSession =
   | { authenticated: false }
   | {
@@ -112,6 +118,24 @@ export type CloudAuthSession =
       csrfToken: string;
       expiresAt: string;
     };
+
+export type CloudTenantResourceKind = "project" | "task" | "skill" | "mcp";
+
+export interface CloudTenantResource {
+  kind: CloudTenantResourceKind;
+  key: string;
+  ownerUserId: string;
+  updatedByUserId: string;
+  payload: Record<string, unknown>;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CloudTenantResourcesPayload {
+  tenantId: string;
+  resources: CloudTenantResource[];
+}
 
 export interface ProviderOption {
   id: string;
@@ -184,6 +208,8 @@ export type SkillScope = "global" | "project";
 
 export interface SkillInfo {
   id: string;
+  tenantId: string;
+  userId: string;
   name: string;
   description: string;
   scope: SkillScope;
@@ -203,6 +229,8 @@ export type McpConnectionStatus = "notStarted" | "starting" | "connected" | "aut
 
 export interface McpServerInfo {
   name: string;
+  tenantId: string;
+  userId: string;
   transport: McpTransport;
   command?: string;
   args: string[];
@@ -276,6 +304,7 @@ export type TerminalStreamEvent =
   | { type: "exit"; exitCode: number };
 
 export interface BootstrapPayload {
+  identity: ForgeIdentityContext;
   workspace: { name: string; branch: string; path: string };
   git: GitStatus;
   runtime: RuntimeStatus;

@@ -4,7 +4,7 @@ import path from "node:path";
 import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import Fastify, { type FastifyReply } from "fastify";
-import type { Activity, ApprovalRequest, BootstrapPayload, ExtensionPayload, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, ExtensionPayload, ForgeIdentityContext, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
 import { applyTaskChanges, type ChangeAction } from "./change-manager.js";
 import { CodexBridge, type RpcMessage } from "./codex-bridge.js";
 import { deepSeekAppServerArgs, deepSeekSettings } from "./deepseek.js";
@@ -20,8 +20,18 @@ const host = process.env.FORGE_HOST || "127.0.0.1";
 const port = Number(process.env.FORGE_PORT || 4782);
 const apiToken = process.env.FORGE_API_TOKEN?.trim() || "";
 const defaultWorkspacePath = path.resolve(process.env.FORGE_WORKSPACE || process.cwd());
+const configuredTenantId = process.env.FORGE_TENANT_ID?.trim() || "";
+const configuredUserId = process.env.FORGE_USER_ID?.trim() || "";
+if (Boolean(configuredTenantId) !== Boolean(configuredUserId)) throw new Error("Forge 租户和用户上下文必须同时提供");
+const cloudIdentityPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+if (configuredTenantId && (!cloudIdentityPattern.test(configuredTenantId) || !cloudIdentityPattern.test(configuredUserId))) {
+  throw new Error("Forge 云端身份格式无效");
+}
+const identity: ForgeIdentityContext = configuredTenantId
+  ? { tenantId: configuredTenantId, userId: configuredUserId, mode: "cloud" }
+  : { tenantId: "local", userId: "local", mode: "local" };
 const deepSeek = deepSeekSettings();
-const extensions = new ExtensionStore();
+const extensions = new ExtensionStore(identity);
 await extensions.load();
 const marketplace = new MarketplaceStore();
 await marketplace.load();
@@ -33,7 +43,7 @@ const runtimeArgs = () => [
   ...mcpAppServerArgs(extensions.mcpConfigs()),
 ];
 const bridge = new CodexBridge(runtimeArgs());
-const store = new TaskStore(defaultWorkspacePath);
+const store = new TaskStore(defaultWorkspacePath, identity);
 await store.load();
 let workspacePath = store.workspace();
 const terminals = new TerminalManager(workspacePath);
@@ -222,6 +232,7 @@ function providers(): ProviderOption[] {
 async function bootstrapPayload(): Promise<BootstrapPayload> {
   const git = await getGitStatus(workspacePath);
   return {
+    identity: store.identityContext(),
     workspace: { name: path.basename(workspacePath), branch: git.branch, path: workspacePath },
     git,
     runtime: runtimeStatus(),

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { McpApprovalMode, McpServerInfo, McpTransport, SkillInfo, SkillScope } from "@forge/contracts";
+import type { ForgeIdentityContext, McpApprovalMode, McpServerInfo, McpTransport, SkillInfo, SkillScope } from "@forge/contracts";
+import { tenantStorageKey } from "./task-store.js";
 
 interface StoredSkill extends Omit<SkillInfo, "status" | "error"> {
   installRoot: string;
@@ -11,6 +12,8 @@ interface StoredSkill extends Omit<SkillInfo, "status" | "error"> {
 
 export interface StoredMcpServer {
   name: string;
+  tenantId: string;
+  userId: string;
   transport: McpTransport;
   command?: string;
   args: string[];
@@ -38,7 +41,9 @@ export interface MarketMcpInput {
 }
 
 interface PersistedExtensions {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  tenantId: string;
+  userId: string;
   skills: StoredSkill[];
   mcpServers: StoredMcpServer[];
 }
@@ -46,8 +51,10 @@ interface PersistedExtensions {
 const now = () => new Date().toISOString();
 const skippedImportFolders = new Set([".git", "node_modules"]);
 
-function initialState(): PersistedExtensions {
-  return { schemaVersion: 1, skills: [], mcpServers: [] };
+const localIdentity: ForgeIdentityContext = { tenantId: "local", userId: "local", mode: "local" };
+
+function initialState(identity: ForgeIdentityContext): PersistedExtensions {
+  return { schemaVersion: 2, tenantId: identity.tenantId, userId: identity.userId, skills: [], mcpServers: [] };
 }
 
 function unquote(value: string) {
@@ -154,14 +161,16 @@ export function mcpAppServerArgs(servers: StoredMcpServer[]) {
 }
 
 export class ExtensionStore {
-  private state = initialState();
+  private state: PersistedExtensions;
   private readonly filePath: string;
   private readonly skillsRoot: string;
 
-  constructor() {
+  constructor(private readonly identity: ForgeIdentityContext = localIdentity) {
+    this.state = initialState(identity);
     const dataDir = process.env.FORGE_DATA_DIR || path.join(os.homedir(), ".forge");
-    this.filePath = path.join(dataDir, "extensions.json");
-    this.skillsRoot = path.join(dataDir, "skills");
+    const tenantRoot = identity.mode === "local" ? dataDir : path.join(dataDir, "tenants", tenantStorageKey(identity.tenantId));
+    this.filePath = path.join(tenantRoot, "extensions.json");
+    this.skillsRoot = path.join(tenantRoot, "skills");
   }
 
   async load() {
@@ -169,12 +178,22 @@ export class ExtensionStore {
     try {
       const loaded = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<PersistedExtensions>;
       this.state = {
-        schemaVersion: 1,
-        skills: Array.isArray(loaded.skills) ? loaded.skills : [],
-        mcpServers: Array.isArray(loaded.mcpServers) ? loaded.mcpServers : [],
+        schemaVersion: 2,
+        tenantId: this.identity.tenantId,
+        userId: this.identity.userId,
+        skills: Array.isArray(loaded.skills) ? loaded.skills.map((skill) => ({
+          ...skill,
+          tenantId: this.identity.tenantId,
+          userId: loaded.schemaVersion === 2 && skill.tenantId === this.identity.tenantId && skill.userId ? skill.userId : this.identity.userId,
+        })) : [],
+        mcpServers: Array.isArray(loaded.mcpServers) ? loaded.mcpServers.map((server) => ({
+          ...server,
+          tenantId: this.identity.tenantId,
+          userId: loaded.schemaVersion === 2 && server.tenantId === this.identity.tenantId && server.userId ? server.userId : this.identity.userId,
+        })) : [],
       };
     } catch {
-      this.state = initialState();
+      this.state = initialState(this.identity);
     }
     await this.persist();
   }
@@ -214,6 +233,8 @@ export class ExtensionStore {
 
     const record: StoredSkill = {
       id,
+      tenantId: this.identity.tenantId,
+      userId: this.identity.userId,
       ...metadata,
       scope,
       workspacePath: scope === "project" ? workspacePath : undefined,
@@ -243,6 +264,8 @@ export class ExtensionStore {
       const skillPath = await copySkillTree(resolvedSource, installRoot);
       const record: StoredSkill = {
         id,
+        tenantId: this.identity.tenantId,
+        userId: this.identity.userId,
         ...metadata,
         scope,
         workspacePath: scope === "project" ? workspacePath : undefined,
@@ -343,6 +366,8 @@ export class ExtensionStore {
     if (!(["auto", "prompt", "writes"] as const).includes(approvalMode)) throw new Error("MCP 审批模式无效");
     const record: StoredMcpServer = {
       name,
+      tenantId: this.identity.tenantId,
+      userId: this.identity.userId,
       transport: input.transport,
       command: input.transport === "stdio" ? input.command?.trim() : undefined,
       args: input.transport === "stdio" ? args : [],

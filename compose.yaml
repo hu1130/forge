@@ -14,6 +14,7 @@ services:
       retries: 20
     volumes:
       - forge-postgres-data:/var/lib/postgresql
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
 
 volumes:
   forge-postgres-data:

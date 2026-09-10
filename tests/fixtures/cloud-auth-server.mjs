@@ -39,10 +39,16 @@ class QaAuthStore {
   async revokeSession(hash) { this.sessions.delete(hash); }
 }
 
+const store = new QaAuthStore();
 const app = await createCloudApi({
-  store: new QaAuthStore(),
-  allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174"],
+  store,
+  allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"],
   cookieSecure: false,
+});
+app.get("/__qa/latest-identity", async (_request, reply) => {
+  const user = [...store.users.values()].at(-1);
+  const membership = user ? store.memberships.get(user.id) : undefined;
+  return user && membership ? { userId: user.id, tenantId: membership.tenantId } : reply.code(404).send({ message: "No QA identity" });
 });
 await app.listen({ host: "127.0.0.1", port: Number(process.env.FORGE_CLOUD_PORT || 4790) });
 console.log("Forge Cloud QA API: ready");

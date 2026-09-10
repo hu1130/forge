@@ -4,9 +4,11 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply } from "fastify";
 import type { CloudAuthSession } from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
+import { TenantAccessError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
 
 export interface CloudApiOptions {
   store: AuthStore;
+  tenantStore?: TenantResourceStore;
   allowedOrigins: string[];
   cookieSecure: boolean;
   cookieSameSite?: "lax" | "none";
@@ -105,6 +107,69 @@ export async function createCloudApi(options: CloudApiOptions) {
     const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
     if (!session) return reply.code(401).send({ message: "请先登录" });
     return session;
+  });
+
+  app.get<{ Querystring: { kind?: string } }>("/v1/tenant/resources", async (request, reply) => {
+    if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const kind = request.query.kind === undefined ? undefined : tenantResourceKind(request.query.kind);
+    if (request.query.kind !== undefined && !kind) return reply.code(400).send({ message: "租户资源类型无效" });
+    try {
+      const resources = await options.tenantStore.listResources({ tenantId: session.tenant.id, userId: session.user.id }, kind);
+      return { tenantId: session.tenant.id, resources };
+    } catch (error) {
+      if (error instanceof TenantAccessError) return reply.code(403).send({ message: error.message });
+      request.log.error(error);
+      return reply.code(500).send({ message: "暂时无法读取租户数据" });
+    }
+  });
+
+  app.put<{ Params: { kind: string; key: string }; Body: { payload?: unknown } }>("/v1/tenant/resources/:kind/:key", async (request, reply) => {
+    if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const kind = tenantResourceKind(request.params.kind);
+    if (!kind) return reply.code(400).send({ message: "租户资源类型无效" });
+    try {
+      const resource = await options.tenantStore.upsertResource(
+        { tenantId: session.tenant.id, userId: session.user.id },
+        { kind, key: tenantResourceKey(request.params.key), payload: tenantResourcePayload(kind, request.body?.payload) },
+      );
+      return resource;
+    } catch (error) {
+      if (error instanceof TenantAccessError) return reply.code(403).send({ message: error.message });
+      if (error instanceof Error && /租户资源/.test(error.message)) return reply.code(400).send({ message: error.message });
+      request.log.error(error);
+      return reply.code(500).send({ message: "暂时无法保存租户数据" });
+    }
+  });
+
+  app.delete<{ Params: { kind: string; key: string } }>("/v1/tenant/resources/:kind/:key", async (request, reply) => {
+    if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const kind = tenantResourceKind(request.params.kind);
+    if (!kind) return reply.code(400).send({ message: "租户资源类型无效" });
+    try {
+      const deleted = await options.tenantStore.deleteResource(
+        { tenantId: session.tenant.id, userId: session.user.id }, kind, tenantResourceKey(request.params.key),
+      );
+      return deleted ? reply.code(204).send() : reply.code(404).send({ message: "租户资源不存在" });
+    } catch (error) {
+      if (error instanceof TenantAccessError) return reply.code(403).send({ message: error.message });
+      if (error instanceof Error && /租户资源/.test(error.message)) return reply.code(400).send({ message: error.message });
+      request.log.error(error);
+      return reply.code(500).send({ message: "暂时无法删除租户数据" });
+    }
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {

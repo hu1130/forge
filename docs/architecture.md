@@ -1,6 +1,6 @@
 # 架构基线
 
-状态：0.11 多用户基础已落地，本机执行面与云端控制面并行演进。
+状态：0.12 租户工作区隔离已落地，本机执行面与云端控制面并行演进。
 
 ## 运行结构
 
@@ -11,7 +11,7 @@ Forge Cloud Web / Desktop（可选登录）
 中心 Cloud API
   ├─ 用户与会话
   ├─ 个人租户与成员关系
-  └─ PostgreSQL（仅服务端连接）
+  └─ PostgreSQL 租户资源登记 + RLS（仅服务端连接）
 
 共享 React Client
   ├─ Electron Desktop
@@ -21,7 +21,8 @@ Forge Cloud Web / Desktop（可选登录）
 本机 Node.js Daemon
   ├─ 会话与事件 API
   ├─ Provider Gateway
-  ├─ 持久化与密钥访问
+  ├─ 按租户哈希目录持久化
+  ├─ 按租户读取 MCP 密钥
   └─ Codex App Server（stdio / JSONL）
 ```
 
@@ -45,6 +46,14 @@ Codex App Server 是唯一 Agent 执行底座。Provider Gateway 将各厂商的
 - Cloud API 从服务端会话解析 `user_id`、`tenant_id` 和角色，忽略客户端伪造的租户头。
 - 本机模式未配置 Cloud API URL 时保持免登录，避免破坏现有安装版。
 
+0.12 已经实现：
+
+- Electron 主进程直接使用 Cloud HttpOnly Cookie 复核会话，渲染器不传入 `tenant_id` 或 `user_id`。
+- 验证后以 `FORGE_TENANT_ID` 和 `FORGE_USER_ID` 启动本机 Daemon；任务、项目路径、Skill、MCP 配置及 MCP Token 按租户隔离。
+- 原 `local` 资料继续使用旧路径；Cloud 租户使用不可逆哈希目录，退出登录会切回本机资料且不会自动合并。
+- Cloud API 提供租户资源登记接口，服务端从会话注入所有者，拒绝客户端租户头以及代码、路径、对话和密钥字段。
+- `forge_tenant_resources` 同时使用显式租户条件、活动成员检查和 PostgreSQL FORCE RLS；开发连接使用 `NOBYPASSRLS` 应用角色。
+
 后续租户业务数据遵循：
 
 - 所有用户拥有的数据均带 `tenant_id` 和 `user_id`。
@@ -53,7 +62,7 @@ Codex App Server 是唯一 Agent 执行底座。Provider Gateway 将各厂商的
 - API 层通过独立的 identity context 传递身份，不允许业务层读取全局“当前用户”。
 - API Key 只保存安全存储引用，不进入普通业务表和事件日志。
 
-下一阶段把任务、项目、Skill、MCP、密钥引用和用量记录迁移为带租户所有权的数据，并在 PostgreSQL 上增加 Row-Level Security；之后再加入团队邀请、邮箱验证、MFA、审计与计费。
+下一阶段增加用户明确触发的本机资料导入、Cloud 元数据同步与版本冲突处理；之后再加入团队邀请、邮箱验证、MFA、审计、用量和计费。完整代码、终端与 Agent 运行数据默认继续留在用户本机。
 
 ## 计划目录
 

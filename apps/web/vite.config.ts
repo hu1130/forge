@@ -7,6 +7,13 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
-    proxy: { "/api": "http://127.0.0.1:4782" },
+    proxy: {
+      "/api": "http://127.0.0.1:4782",
+      "/cloud": {
+        target: "http://127.0.0.1:4790",
+        changeOrigin: true,
+        rewrite: (requestPath) => requestPath.replace(/^\/cloud/, ""),
+      },
+    },
   },
 });

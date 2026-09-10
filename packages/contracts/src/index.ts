@@ -90,6 +90,29 @@ export interface QueuedTurn {
   createdAt: string;
 }
 
+export interface CloudAuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+}
+
+export interface CloudTenantContext {
+  id: string;
+  name: string;
+  slug: string;
+  role: "owner" | "admin" | "member";
+}
+
+export type CloudAuthSession =
+  | { authenticated: false }
+  | {
+      authenticated: true;
+      user: CloudAuthUser;
+      tenant: CloudTenantContext;
+      csrfToken: string;
+      expiresAt: string;
+    };
+
 export interface ProviderOption {
   id: string;
   label: string;

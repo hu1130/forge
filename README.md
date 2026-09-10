@@ -1,9 +1,13 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek，面向单机单用户使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.11 新增了可独立部署的 Cloud API 与多用户/个人租户基础，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
+- Forge Cloud 注册、登录、会话恢复、退出和当前账户接口；注册时原子创建用户、个人租户与 owner 成员关系
+- PostgreSQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
+- 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，浏览器使用 HttpOnly Cookie 和 CSRF 令牌
+- 可选 Cloud 登录界面及工作台账户入口；未设置 Cloud API URL 时保持原有单机行为
 - 项目文件夹选择，以及按项目隔离的本地任务列表
 - 新建、搜索、置顶、重命名、归档、恢复和永久删除任务
 - DeepSeek 多轮会话；Daemon 重启后可恢复同一 App Server 线程
@@ -35,7 +39,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.10.0.exe
+release/Forge-Setup-0.11.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -72,6 +76,19 @@ pnpm dev
 pnpm dev:desktop
 ```
 
+### 运行多用户纵向切片
+
+Cloud API 只连接 PostgreSQL，不会自动降级到 SQLite 或普通 JSON 文件。开发数据库使用仓库中的 Compose 配置：
+
+```powershell
+docker compose up -d postgres
+pnpm dev:cloud
+```
+
+浏览器打开 `http://127.0.0.1:5173/?cloud=1`。开发默认连接 `postgresql://forge:forge_dev_only@127.0.0.1:54329/forge`；部署时必须通过 `DATABASE_URL` 使用独立生产凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
+
+`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前本机任务仍保存在本地 Daemon；将任务、Skill、MCP 与用量数据迁移为租户数据属于下一阶段。
+
 ## 构建 Windows 安装包
 
 构建机需先安装官方 Codex CLI `0.153.4`。也可以把 `FORGE_CODEX_SOURCE_DIR` 指向含该版本 `codex.exe` 的目录。构建脚本会严格校验 CLI 版本，打包 Forge Daemon，并把运行资源和第三方许可证放入安装包；版本不匹配时会停止构建，避免协议静默漂移。
@@ -93,7 +110,7 @@ node scripts/verify-packaged-extensions.mjs
 node scripts/verify-packaged-mcp-call.mjs
 ```
 
-当前版本还不包含：市场账号与用户发布、评分或付费、多用户/多租户、云同步、团队权限、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
+当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、租户任务/Skill/MCP 数据迁移、云端 Agent Worker 隔离、云同步、额度与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
 
 ### 发布远程市场目录
 

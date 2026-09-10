@@ -110,6 +110,64 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); animation: pulse 1.3s infinite; }
 .sidebar-settings { height: 42px; display: flex; align-items: center; gap: 9px; margin: 0 -1px; padding: 0 9px; color: #4d5159; background: transparent; border: 0; border-top: 1px solid var(--line); cursor: pointer; }
 .sidebar-settings:hover { color: var(--ink); background: #eceef2; }
+.sidebar-account { min-height: 54px; display: grid; grid-template-columns: 30px minmax(0, 1fr) 24px; align-items: center; gap: 8px; margin: 0 -1px; padding: 7px 8px; color: #3f444d; background: transparent; border: 0; border-top: 1px solid var(--line); cursor: pointer; text-align: left; }
+.sidebar-account:hover { color: var(--ink); background: #eceef2; }
+.sidebar-account:disabled { opacity: .58; cursor: default; }
+.sidebar-account > span:first-child { width: 30px; height: 30px; display: grid; place-items: center; color: white; background: #353941; border-radius: 7px; font-weight: 700; }
+.sidebar-account > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.sidebar-account strong, .sidebar-account small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-account strong { font-size: 12px; font-weight: 650; }
+.sidebar-account small { color: var(--muted); font-size: 10px; }
+.sidebar-account > svg { color: var(--muted); }
+
+.cloud-auth-loading { width: 100%; height: 100%; display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--muted); background: #f6f7f9; }
+.cloud-auth-loading p { margin: 0; }
+.cloud-auth-shell { width: 100%; height: 100%; min-height: 520px; display: grid; grid-template-columns: minmax(360px, .92fr) minmax(440px, 1.08fr); overflow: auto; background: #f6f7f9; }
+.cloud-auth-intro { min-height: 100%; display: flex; flex-direction: column; justify-content: space-between; gap: 54px; padding: clamp(34px, 6vw, 76px); color: #f5f6f8; background: #18191c; }
+.cloud-auth-brand { display: flex; align-items: center; gap: 12px; font-size: 20px; }
+.cloud-auth-mark { position: relative; width: 28px; height: 28px; border: 2px solid #8fa5ff; transform: rotate(30deg); }
+.cloud-auth-mark::before, .cloud-auth-mark::after { content: ""; position: absolute; inset: 4px; border: 1px solid #8fa5ff; transform: rotate(60deg); }
+.cloud-auth-mark::after { inset: 9px; background: #8fa5ff; border: 0; }
+.cloud-auth-eyebrow, .cloud-auth-step { color: #9aabfa; font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+.cloud-auth-step { color: #4f62b8; }
+.cloud-auth-intro h1 { max-width: 600px; margin: 16px 0 18px; font-size: clamp(32px, 3.5vw, 44px); font-weight: 660; line-height: 1.12; letter-spacing: -.045em; }
+.cloud-auth-intro > div:nth-child(2) > p { max-width: 530px; margin: 0; color: #b9bdc6; font-size: 14px; line-height: 1.8; }
+.cloud-auth-intro ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.cloud-auth-intro li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: start; }
+.cloud-auth-intro li > svg { margin-top: 2px; color: #9aabfa; }
+.cloud-auth-intro li span { display: grid; gap: 3px; }
+.cloud-auth-intro li strong { font-size: 12px; }
+.cloud-auth-intro li small { color: #9297a2; font-size: 11px; }
+.cloud-auth-panel { min-height: 100%; display: grid; place-items: center; padding: clamp(28px, 6vw, 86px); }
+.cloud-auth-card { width: min(100%, 420px); }
+.cloud-auth-card h2 { margin: 14px 0 8px; color: var(--ink); font-size: 28px; font-weight: 680; letter-spacing: -.035em; }
+.cloud-auth-card > p { margin: 0 0 28px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.cloud-auth-card form { display: grid; gap: 16px; }
+.cloud-auth-card label { display: grid; gap: 7px; color: #343840; font-size: 12px; font-weight: 650; }
+.cloud-auth-card input { width: 100%; height: 44px; padding: 0 12px; color: var(--ink); background: white; border: 1px solid var(--line-strong); border-radius: 8px; outline: 0; }
+.cloud-auth-card input:hover { border-color: #aeb4be; }
+.cloud-auth-card input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(49, 92, 244, .12); }
+.field-hint { margin-top: -8px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.55; }
+.cloud-auth-error { min-height: 38px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 7px; padding: 8px 10px; color: #9d2733; background: var(--red-soft); border: 1px solid #efc8cd; border-radius: 7px; font-size: 11px; line-height: 1.45; }
+.cloud-auth-submit { height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; color: white; background: var(--blue); border: 0; border-radius: 8px; cursor: pointer; font-weight: 680; }
+.cloud-auth-submit:hover { background: var(--blue-hover); }
+.cloud-auth-submit:disabled { opacity: .55; cursor: default; }
+.cloud-auth-switch { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 22px; color: var(--muted); font-size: 11px; }
+.cloud-auth-switch button { min-height: 28px; padding: 0 5px; color: var(--blue); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-weight: 650; }
+.cloud-auth-switch button:hover { text-decoration: underline; }
+
+@media (max-width: 820px) {
+  .cloud-auth-shell { grid-template-columns: 1fr; }
+  .cloud-auth-intro { min-height: auto; gap: 30px; padding: 28px clamp(22px, 7vw, 48px); }
+  .cloud-auth-intro h1 { margin: 10px 0; font-size: clamp(27px, 8vw, 38px); }
+  .cloud-auth-intro > div:nth-child(2) > p { font-size: 12px; }
+  .cloud-auth-intro ul { display: none; }
+  .cloud-auth-panel { min-height: 520px; padding: 38px 22px 56px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-auth-shell .spin { animation: none; }
+}
 
 .workspace-main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--canvas); }
 .task-header { min-height: 82px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 30px 16px; border-bottom: 1px solid #f0f1f3; }

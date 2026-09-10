@@ -5,6 +5,7 @@ declare global {
     forgeDesktop?: {
       platform: string;
       isDesktop: boolean;
+      cloudApiUrl: string;
       selectWorkspace: () => Promise<string | null>;
       selectSkillDirectory: () => Promise<string | null>;
       getDeepSeekStatus: () => Promise<{ configured: boolean; encryptedStorage: boolean }>;

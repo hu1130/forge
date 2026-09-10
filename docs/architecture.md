@@ -1,10 +1,18 @@
 # 架构基线
 
-状态：已确认，P0 阶段。
+状态：0.11 多用户基础已落地，本机执行面与云端控制面并行演进。
 
 ## 运行结构
 
 ```text
+Forge Cloud Web / Desktop（可选登录）
+          │ HTTPS + HttpOnly Session
+          ▼
+中心 Cloud API
+  ├─ 用户与会话
+  ├─ 个人租户与成员关系
+  └─ PostgreSQL（仅服务端连接）
+
 共享 React Client
   ├─ Electron Desktop
   └─ 127.0.0.1 Web
@@ -29,15 +37,23 @@ Codex App Server 是唯一 Agent 执行底座。Provider Gateway 将各厂商的
 
 ## 多用户演进边界
 
-当前版本是 Windows 本机单用户模式，但从首个持久化版本开始：
+0.11 已经实现：
+
+- `apps/cloud-api` 独立承载注册、登录、退出和账户上下文，不和本机 Daemon 共用数据库凭据。
+- 用户注册时在同一 PostgreSQL 事务中创建个人租户和 owner 成员关系。
+- 会话令牌使用高熵随机值，数据库只保存摘要；密码使用 scrypt 慢哈希。
+- Cloud API 从服务端会话解析 `user_id`、`tenant_id` 和角色，忽略客户端伪造的租户头。
+- 本机模式未配置 Cloud API URL 时保持免登录，避免破坏现有安装版。
+
+后续租户业务数据遵循：
 
 - 所有用户拥有的数据均带 `tenant_id` 和 `user_id`。
-- 本机模式使用固定的 `local` tenant 和当前 Windows 用户映射，不实现登录界面。
+- 本机模式使用固定的 `local` tenant 和当前 Windows 用户映射。
 - 仓库、任务、消息、审批、密钥引用和 MCP 配置必须有明确所有者。
 - API 层通过独立的 identity context 传递身份，不允许业务层读取全局“当前用户”。
 - API Key 只保存安全存储引用，不进入普通业务表和事件日志。
 
-后续多用户阶段再加入认证、会话管理、权限校验、租户隔离迁移和审计；P0-P7 不提前实现这些产品功能。
+下一阶段把任务、项目、Skill、MCP、密钥引用和用量记录迁移为带租户所有权的数据，并在 PostgreSQL 上增加 Row-Level Security；之后再加入团队邀请、邮箱验证、MFA、审计与计费。
 
 ## 计划目录
 
@@ -74,4 +90,3 @@ vendor/
 - 历史恢复：恢复记录后发起新的继续回合，不恢复已经断开的厂商 API 流。
 - 模型失败：明确报错，不自动切换模型、厂商或 API。
 - 当前 Web：仅回环地址，由桌面托盘 Daemon 提供；暂不实现 Windows 服务和局域网访问。
-

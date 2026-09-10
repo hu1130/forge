@@ -2,9 +2,10 @@ import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "
 import {
   AlertCircle, Archive, ArrowUp, Bot, Check, ChevronDown, ChevronRight, CircleStop,
   FileCode2, FileDiff, Folder, GitBranch, LoaderCircle, MoreHorizontal, Paperclip, PanelRightClose,
-  Inbox, Pin, PlugZap, Plus, Redo2, Search, Settings, Sparkles, TerminalSquare, Undo2, UserRound, X,
+  Inbox, LogOut, Pin, PlugZap, Plus, Redo2, Search, Settings, Sparkles, TerminalSquare, Undo2, UserRound, X,
 } from "lucide-react";
-import type { Activity, ApprovalRequest, BootstrapPayload, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, CloudAuthSession, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import CloudAuthGate from "./CloudAuthGate";
 import ContextFilePicker from "./ContextFilePicker";
 import OnboardingDialog from "./OnboardingDialog";
 import SettingsModal from "./SettingsModal";
@@ -254,7 +255,9 @@ function parseSseChunk(buffer: string) {
   return { events, rest };
 }
 
-export function App() {
+type AuthenticatedCloudSession = Extract<CloudAuthSession, { authenticated: true }>;
+
+function WorkspaceApp({ cloudSession, onCloudLogout }: { cloudSession?: AuthenticatedCloudSession; onCloudLogout: () => Promise<void> }) {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [providerId, setProviderId] = useState("");
@@ -285,6 +288,7 @@ export function App() {
   const [runningInputMode, setRunningInputMode] = useState<"steer" | "queue">("steer");
   const [followUpBusy, setFollowUpBusy] = useState(false);
   const [queueBusy, setQueueBusy] = useState("");
+  const [cloudLogoutBusy, setCloudLogoutBusy] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const settingsDialogRef = useRef<HTMLElement>(null);
@@ -806,6 +810,19 @@ export function App() {
     setBootstrap((current) => current ? { ...current, git, workspace: { ...current.workspace, branch: git.branch } } : current);
   };
 
+  const logoutCloudAccount = async () => {
+    if (cloudLogoutBusy) return;
+    setCloudLogoutBusy(true);
+    setError("");
+    try {
+      await onCloudLogout();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCloudLogoutBusy(false);
+    }
+  };
+
   if (!bootstrap) {
     return (
       <main className="loading-screen"><ForgeMark />{error
@@ -861,6 +878,11 @@ export function App() {
             {!visibleTasks.length && <p className="task-empty">{searchQuery ? "没有匹配的任务" : showArchived ? "还没有归档任务" : "还没有任务"}</p>}
           </div>
         </section>
+        {cloudSession && <button className="sidebar-account" type="button" aria-label={`退出 ${cloudSession.user.displayName} 的账户`} title={`${cloudSession.user.email} · ${cloudSession.tenant.name}`} disabled={cloudLogoutBusy} onClick={() => void logoutCloudAccount()}>
+          <span>{cloudSession.user.displayName.slice(0, 1).toLocaleUpperCase()}</span>
+          <span><strong>{cloudSession.user.displayName}</strong><small>{cloudSession.tenant.name}</small></span>
+          <LogOut size={15} aria-hidden="true" />
+        </button>}
         <button className="sidebar-settings" onClick={() => setSettingsOpen(true)}><Settings size={17} />设置</button>
       </aside>
 
@@ -978,4 +1000,8 @@ export function App() {
       />}
     </div>
   );
+}
+
+export function App() {
+  return <CloudAuthGate>{({ session, logout }) => <WorkspaceApp cloudSession={session} onCloudLogout={logout} />}</CloudAuthGate>;
 }

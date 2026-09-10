@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("forgeDesktop", {
   platform: process.platform,
   isDesktop: true,
+  cloudApiUrl: process.env.FORGE_CLOUD_API_URL?.trim() || "",
   selectWorkspace: () => ipcRenderer.invoke("forge:select-workspace"),
   selectSkillDirectory: () => ipcRenderer.invoke("forge:select-skill-directory"),
   getDeepSeekStatus: () => ipcRenderer.invoke("forge:deepseek-status"),

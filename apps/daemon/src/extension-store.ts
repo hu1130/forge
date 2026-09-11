@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ForgeIdentityContext, McpApprovalMode, McpServerInfo, McpTransport, SkillInfo, SkillScope } from "@forge/contracts";
+import type {
+  CloudMcpCatalogMetadata, CloudSkillCatalogMetadata, ExtensionCatalogEntry, ExtensionCatalogMetadata, ExtensionSyncReceipt,
+  ExtensionSyncSnapshot, ForgeIdentityContext, McpApprovalMode, McpServerInfo, McpTransport, SkillInfo, SkillScope,
+} from "@forge/contracts";
 import { tenantStorageKey } from "./task-store.js";
 
 interface StoredSkill extends Omit<SkillInfo, "status" | "error"> {
@@ -23,6 +26,7 @@ export interface StoredMcpServer {
   approvalMode: McpApprovalMode;
   useBearerToken: boolean;
   createdAt: string;
+  updatedAt: string;
   marketplaceId?: string;
   marketplaceVersion?: string;
 }
@@ -41,11 +45,12 @@ export interface MarketMcpInput {
 }
 
 interface PersistedExtensions {
-  schemaVersion: 2;
+  schemaVersion: 3;
   tenantId: string;
   userId: string;
   skills: StoredSkill[];
   mcpServers: StoredMcpServer[];
+  extensionSyncReceipts: Record<string, ExtensionSyncReceipt>;
 }
 
 const now = () => new Date().toISOString();
@@ -54,7 +59,23 @@ const skippedImportFolders = new Set([".git", "node_modules"]);
 const localIdentity: ForgeIdentityContext = { tenantId: "local", userId: "local", mode: "local" };
 
 function initialState(identity: ForgeIdentityContext): PersistedExtensions {
-  return { schemaVersion: 2, tenantId: identity.tenantId, userId: identity.userId, skills: [], mcpServers: [] };
+  return { schemaVersion: 3, tenantId: identity.tenantId, userId: identity.userId, skills: [], mcpServers: [], extensionSyncReceipts: {} };
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function receiptKey(kind: "skill" | "mcp", key: string) {
+  return `${kind}:${key}`;
+}
+
+function skillCatalogKey(skill: Pick<StoredSkill, "id" | "scope" | "marketplaceId">) {
+  return skill.scope === "global" ? `global:${skill.marketplaceId}` : `project:${skill.id}`;
+}
+
+function mcpCatalogKey(server: Pick<StoredMcpServer, "marketplaceId">) {
+  return `market:${server.marketplaceId}`;
 }
 
 function unquote(value: string) {
@@ -176,21 +197,33 @@ export class ExtensionStore {
   async load() {
     await mkdir(this.skillsRoot, { recursive: true });
     try {
-      const loaded = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<PersistedExtensions>;
+      const loaded = JSON.parse(await readFile(this.filePath, "utf8")) as {
+        schemaVersion?: number;
+        tenantId?: string;
+        userId?: string;
+        skills?: StoredSkill[];
+        mcpServers?: StoredMcpServer[];
+        extensionSyncReceipts?: Record<string, ExtensionSyncReceipt>;
+      };
       this.state = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         tenantId: this.identity.tenantId,
         userId: this.identity.userId,
         skills: Array.isArray(loaded.skills) ? loaded.skills.map((skill) => ({
           ...skill,
           tenantId: this.identity.tenantId,
-          userId: loaded.schemaVersion === 2 && skill.tenantId === this.identity.tenantId && skill.userId ? skill.userId : this.identity.userId,
+          userId: (loaded.schemaVersion || 0) >= 2 && skill.tenantId === this.identity.tenantId && skill.userId ? skill.userId : this.identity.userId,
+          updatedAt: validIsoTimestamp(skill.updatedAt) ? skill.updatedAt : skill.installedAt,
         })) : [],
         mcpServers: Array.isArray(loaded.mcpServers) ? loaded.mcpServers.map((server) => ({
           ...server,
           tenantId: this.identity.tenantId,
-          userId: loaded.schemaVersion === 2 && server.tenantId === this.identity.tenantId && server.userId ? server.userId : this.identity.userId,
+          userId: (loaded.schemaVersion || 0) >= 2 && server.tenantId === this.identity.tenantId && server.userId ? server.userId : this.identity.userId,
+          updatedAt: validIsoTimestamp(server.updatedAt) ? server.updatedAt : server.createdAt,
         })) : [],
+        extensionSyncReceipts: loaded.extensionSyncReceipts && typeof loaded.extensionSyncReceipts === "object"
+          ? loaded.extensionSyncReceipts
+          : {},
       };
     } catch {
       this.state = initialState(this.identity);
@@ -230,6 +263,7 @@ export class ExtensionStore {
     const id = randomUUID();
     const installRoot = path.join(this.skillsRoot, id);
     const skillPath = await copySkillTree(resolvedSource, installRoot);
+    const timestamp = now();
 
     const record: StoredSkill = {
       id,
@@ -240,7 +274,8 @@ export class ExtensionStore {
       workspacePath: scope === "project" ? workspacePath : undefined,
       sourcePath: resolvedSource,
       enabled: true,
-      installedAt: now(),
+      installedAt: timestamp,
+      updatedAt: timestamp,
       installRoot,
       skillPath,
     };
@@ -262,6 +297,7 @@ export class ExtensionStore {
       const id = randomUUID();
       const installRoot = path.join(this.skillsRoot, id);
       const skillPath = await copySkillTree(resolvedSource, installRoot);
+      const timestamp = now();
       const record: StoredSkill = {
         id,
         tenantId: this.identity.tenantId,
@@ -271,7 +307,8 @@ export class ExtensionStore {
         workspacePath: scope === "project" ? workspacePath : undefined,
         sourcePath: `marketplace:${marketplaceId}`,
         enabled: true,
-        installedAt: now(),
+        installedAt: timestamp,
+        updatedAt: timestamp,
         marketplaceId,
         marketplaceVersion,
         installRoot,
@@ -298,6 +335,7 @@ export class ExtensionStore {
       sourcePath: `marketplace:${marketplaceId}`,
       marketplaceVersion,
       skillPath: path.join(existing.installRoot, path.relative(temporaryRoot, skillPath)),
+      updatedAt: now(),
     });
     await this.persist();
     await rm(backupRoot, { recursive: true, force: true });
@@ -307,7 +345,9 @@ export class ExtensionStore {
   async setSkillEnabled(id: string, enabled: boolean) {
     const skill = this.state.skills.find((item) => item.id === id);
     if (!skill) return false;
+    if (skill.enabled === enabled) return true;
     skill.enabled = enabled;
+    skill.updatedAt = now();
     await this.persist();
     return true;
   }
@@ -316,6 +356,7 @@ export class ExtensionStore {
     const index = this.state.skills.findIndex((item) => item.id === id);
     if (index < 0) return false;
     const [skill] = this.state.skills.splice(index, 1);
+    if (skill.marketplaceId) delete this.state.extensionSyncReceipts[receiptKey("skill", skillCatalogKey(skill))];
     const target = path.resolve(skill.installRoot);
     const root = path.resolve(this.skillsRoot);
     if (!target.startsWith(`${root}${path.sep}`)) throw new Error("拒绝删除 Forge Skills 目录之外的文件");
@@ -335,6 +376,133 @@ export class ExtensionStore {
       status: server.enabled ? "notStarted" : "disabled",
       tools: [],
     }));
+  }
+
+  extensionSyncSnapshot(workspacePath: string): ExtensionSyncSnapshot {
+    if (this.identity.mode !== "cloud") throw new Error("扩展目录同步只在 Cloud 租户中可用");
+    const visibleSkills = this.state.skills.filter((skill) => skill.scope === "global" || skill.workspacePath === workspacePath);
+    const skillEntries = visibleSkills.flatMap((skill): ExtensionCatalogEntry[] => {
+      if (!skill.marketplaceId || !skill.marketplaceVersion) return [];
+      return [{
+        kind: "skill",
+        key: skillCatalogKey(skill),
+        label: skill.name,
+        metadata: {
+          marketplaceId: skill.marketplaceId,
+          marketplaceVersion: skill.marketplaceVersion,
+          scope: skill.scope,
+          enabled: skill.enabled,
+          updatedAt: skill.updatedAt,
+        },
+      }];
+    });
+    const mcpEntries = this.state.mcpServers.flatMap((server): ExtensionCatalogEntry[] => {
+      if (!server.marketplaceId || !server.marketplaceVersion) return [];
+      return [{
+        kind: "mcp",
+        key: mcpCatalogKey(server),
+        label: server.name,
+        metadata: {
+          marketplaceId: server.marketplaceId,
+          marketplaceVersion: server.marketplaceVersion,
+          transport: server.transport,
+          enabled: server.enabled,
+          approvalMode: server.approvalMode,
+          updatedAt: server.updatedAt,
+        },
+      }];
+    });
+    return {
+      entries: [...skillEntries, ...mcpEntries],
+      receipts: Object.fromEntries(Object.entries(this.state.extensionSyncReceipts).map(([key, receipt]) => [key, { ...receipt }])),
+      excluded: {
+        customSkills: visibleSkills.filter((skill) => !skill.marketplaceId).length,
+        customMcpServers: this.state.mcpServers.filter((server) => !server.marketplaceId).length,
+      },
+    };
+  }
+
+  async recordExtensionSync(kind: "skill" | "mcp", key: string, receipt: ExtensionSyncReceipt, workspacePath: string) {
+    const entry = this.extensionSyncSnapshot(workspacePath).entries.find((item) => item.kind === kind && item.key === key);
+    if (!entry) throw new Error("可同步扩展不存在");
+    if (!Number.isSafeInteger(receipt.resourceVersion) || receipt.resourceVersion < 1
+      || entry.metadata.updatedAt !== receipt.localUpdatedAt) {
+      throw new Error("扩展已发生变化，请重新同步");
+    }
+    this.state.extensionSyncReceipts[receiptKey(kind, key)] = { ...receipt };
+    await this.persist();
+    return this.extensionSyncSnapshot(workspacePath);
+  }
+
+  async applyCloudExtensionMetadata(
+    kind: "skill" | "mcp",
+    key: string,
+    metadata: CloudSkillCatalogMetadata | CloudMcpCatalogMetadata,
+    expectedLocalUpdatedAt: string,
+    resourceVersion: number,
+    workspacePath: string,
+  ) {
+    const current = this.extensionSyncSnapshot(workspacePath).entries.find((item) => item.kind === kind && item.key === key);
+    if (!current) throw new Error("可同步扩展不存在");
+    if (current.metadata.updatedAt !== expectedLocalUpdatedAt) throw new Error("本机扩展已发生变化，请重新同步");
+    if (!Number.isSafeInteger(resourceVersion) || resourceVersion < 1) throw new Error("云端扩展版本无效");
+    if (!validIsoTimestamp(metadata.updatedAt)) throw new Error("云端扩展目录信息无效");
+
+    if (kind === "skill") {
+      const remote = metadata as CloudSkillCatalogMetadata;
+      const skill = this.state.skills.find((item) => item.marketplaceId && skillCatalogKey(item) === key);
+      if (!skill || typeof remote.marketplaceId !== "string" || typeof remote.marketplaceVersion !== "string"
+        || (remote.scope !== "global" && remote.scope !== "project") || typeof remote.enabled !== "boolean"
+        || remote.marketplaceId !== skill.marketplaceId || remote.marketplaceVersion !== skill.marketplaceVersion
+        || remote.scope !== skill.scope) {
+        throw new Error("云端 Skill 版本或作用域与本机不一致，请先在扩展市场更新");
+      }
+      skill.enabled = remote.enabled;
+      skill.updatedAt = remote.updatedAt;
+    } else {
+      const remote = metadata as CloudMcpCatalogMetadata;
+      const server = this.state.mcpServers.find((item) => item.marketplaceId && mcpCatalogKey(item) === key);
+      if (!server || typeof remote.marketplaceId !== "string" || typeof remote.marketplaceVersion !== "string"
+        || (remote.transport !== "stdio" && remote.transport !== "http")
+        || !(["auto", "prompt", "writes"] as const).includes(remote.approvalMode)
+        || typeof remote.enabled !== "boolean"
+        || remote.marketplaceId !== server.marketplaceId || remote.marketplaceVersion !== server.marketplaceVersion
+        || remote.transport !== server.transport) {
+        throw new Error("云端 MCP 版本或连接类型与本机不一致，请先在扩展市场更新");
+      }
+      server.enabled = remote.enabled;
+      server.approvalMode = remote.approvalMode;
+      server.updatedAt = remote.updatedAt;
+    }
+
+    this.state.extensionSyncReceipts[receiptKey(kind, key)] = { resourceVersion, localUpdatedAt: metadata.updatedAt };
+    await this.persist();
+    return this.extensionSyncSnapshot(workspacePath);
+  }
+
+  async restoreExtensionSyncState(
+    kind: "skill" | "mcp",
+    key: string,
+    metadata: ExtensionCatalogMetadata,
+    receipt: ExtensionSyncReceipt | undefined,
+    workspacePath: string,
+  ) {
+    if (kind === "skill") {
+      const skill = this.state.skills.find((item) => item.marketplaceId && skillCatalogKey(item) === key);
+      if (!skill || !("scope" in metadata)) throw new Error("无法恢复本机 Skill 状态");
+      skill.enabled = metadata.enabled;
+      skill.updatedAt = metadata.updatedAt;
+    } else {
+      const server = this.state.mcpServers.find((item) => item.marketplaceId && mcpCatalogKey(item) === key);
+      if (!server || !("transport" in metadata)) throw new Error("无法恢复本机 MCP 状态");
+      server.enabled = metadata.enabled;
+      server.approvalMode = metadata.approvalMode;
+      server.updatedAt = metadata.updatedAt;
+    }
+    if (receipt) this.state.extensionSyncReceipts[receiptKey(kind, key)] = { ...receipt };
+    else delete this.state.extensionSyncReceipts[receiptKey(kind, key)];
+    await this.persist();
+    return this.extensionSyncSnapshot(workspacePath);
   }
 
   async addMcpServer(input: {
@@ -377,6 +545,7 @@ export class ExtensionStore {
       approvalMode,
       useBearerToken: input.transport === "http" && Boolean(input.useBearerToken),
       createdAt: now(),
+      updatedAt: now(),
       marketplaceId: input.marketplaceId,
       marketplaceVersion: input.marketplaceVersion,
     };
@@ -410,7 +579,9 @@ export class ExtensionStore {
   async setMcpEnabled(name: string, enabled: boolean) {
     const server = this.state.mcpServers.find((item) => item.name === name);
     if (!server) return false;
+    if (server.enabled === enabled) return true;
     server.enabled = enabled;
+    server.updatedAt = now();
     await this.persist();
     return true;
   }
@@ -418,7 +589,8 @@ export class ExtensionStore {
   async deleteMcpServer(name: string) {
     const index = this.state.mcpServers.findIndex((item) => item.name === name);
     if (index < 0) return false;
-    this.state.mcpServers.splice(index, 1);
+    const [server] = this.state.mcpServers.splice(index, 1);
+    if (server.marketplaceId) delete this.state.extensionSyncReceipts[receiptKey("mcp", mcpCatalogKey(server))];
     await this.persist();
     return true;
   }

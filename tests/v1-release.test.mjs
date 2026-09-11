@@ -43,10 +43,10 @@ test("Forge isolates Codex state and encrypts MCP bearer tokens", async () => {
   assert.doesNotMatch(extensions, /bearerToken:\s*string/);
 });
 
-test("Skills and MCP expose management APIs and App Server discovery", async () => {
+test("Skills and MCP expose management, safe cloud sync, and App Server discovery", async () => {
   const server = await readFile("apps/daemon/src/server.ts", "utf8");
   const catalog = JSON.parse(await readFile("apps/daemon/resources/deepseek-models.json", "utf8"));
-  for (const route of ["/api/extensions", "/api/skills/import", "/api/skills/:id", "/api/mcp/servers", "/api/mcp/servers/:name", "/api/mcp/refresh"]) {
+  for (const route of ["/api/extensions", "/api/skills/import", "/api/skills/:id", "/api/cloud-sync/extensions", "/api/mcp/servers", "/api/mcp/servers/:name", "/api/mcp/refresh"]) {
     assert.ok(server.includes(route), `Missing extension API: ${route}`);
   }
   assert.match(server, /skills\/extraRoots\/set/);

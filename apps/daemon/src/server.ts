@@ -4,7 +4,12 @@ import path from "node:path";
 import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import Fastify, { type FastifyReply } from "fastify";
-import type { Activity, ApprovalRequest, BootstrapPayload, CloudTaskMetadata, ExtensionPayload, ForgeIdentityContext, ForgeTask, MarketplacePayload, McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo, SkillScope, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type {
+  Activity, ApprovalRequest, BootstrapPayload, CloudMcpCatalogMetadata, CloudSkillCatalogMetadata,
+  CloudTaskMetadata, ExtensionPayload, ExtensionSyncSnapshot, ForgeIdentityContext, ForgeTask, MarketplacePayload,
+  McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo,
+  SkillScope, TaskStreamEvent, WorkspaceFileInfo,
+} from "@forge/contracts";
 import { applyTaskChanges, type ChangeAction } from "./change-manager.js";
 import { CodexBridge, type RpcMessage } from "./codex-bridge.js";
 import { deepSeekAppServerArgs, deepSeekSettings } from "./deepseek.js";
@@ -1119,6 +1124,76 @@ app.post<{
       resourceVersion as number,
     );
   } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/cloud-sync/extensions", async (_request, reply) => {
+  try {
+    return extensions.extensionSyncSnapshot(workspacePath);
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{
+  Body: { kind?: "skill" | "mcp"; key?: string; resourceVersion?: number; localUpdatedAt?: string };
+}>("/api/cloud-sync/extensions/receipt", async (request, reply) => {
+  const { kind, key, resourceVersion, localUpdatedAt } = request.body || {};
+  if ((kind !== "skill" && kind !== "mcp") || !key || !localUpdatedAt || !Number.isSafeInteger(resourceVersion)) {
+    return reply.code(400).send({ message: "扩展同步回执无效" });
+  }
+  try {
+    return await extensions.recordExtensionSync(kind, key, {
+      resourceVersion: resourceVersion as number,
+      localUpdatedAt,
+    }, workspacePath);
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{
+  Params: { kind: string; key: string };
+  Body: { metadata?: unknown; expectedLocalUpdatedAt?: string; resourceVersion?: number };
+}>("/api/cloud-sync/extensions/:kind/:key/apply", async (request, reply) => {
+  if (runningTurns.size) return reply.code(409).send({ message: "请先停止正在运行的任务，再应用云端扩展目录" });
+  const kind = request.params.kind;
+  const { metadata, expectedLocalUpdatedAt, resourceVersion } = request.body || {};
+  if ((kind !== "skill" && kind !== "mcp") || !metadata || typeof metadata !== "object" || Array.isArray(metadata)
+    || !expectedLocalUpdatedAt || !Number.isSafeInteger(resourceVersion)) {
+    return reply.code(400).send({ message: "云端扩展目录信息无效" });
+  }
+  let before: ExtensionSyncSnapshot;
+  try {
+    before = extensions.extensionSyncSnapshot(workspacePath);
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+  const previous = before.entries.find((entry) => entry.kind === kind && entry.key === request.params.key);
+  const previousReceipt = before.receipts[`${kind}:${request.params.key}`];
+  if (!previous) return reply.code(404).send({ message: "可同步扩展不存在" });
+  let snapshot;
+  try {
+    snapshot = await extensions.applyCloudExtensionMetadata(
+      kind,
+      request.params.key,
+      metadata as CloudSkillCatalogMetadata | CloudMcpCatalogMetadata,
+      expectedLocalUpdatedAt,
+      resourceVersion as number,
+      workspacePath,
+    );
+  } catch (error) {
+    return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    if (kind === "skill") await applySkillRoots();
+    else await restartRuntime();
+    return snapshot;
+  } catch (error) {
+    await extensions.restoreExtensionSyncState(kind, request.params.key, previous.metadata, previousReceipt, workspacePath);
+    if (kind === "skill") await applySkillRoots().catch(() => undefined);
+    else await restartRuntime().catch(() => undefined);
     return reply.code(409).send({ message: error instanceof Error ? error.message : String(error) });
   }
 });

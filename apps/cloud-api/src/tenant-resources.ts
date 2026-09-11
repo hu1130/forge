@@ -22,8 +22,8 @@ export class TenantVersionConflictError extends Error {
 const allowedFields: Record<CloudTenantResourceKind, Set<string>> = {
   project: new Set(["name", "branch", "repositoryKey", "archived"]),
   task: new Set(["projectKey", "title", "subtitle", "state", "pinned", "archived", "updatedAt"]),
-  skill: new Set(["name", "description", "scope", "projectKey", "enabled", "marketplaceId", "marketplaceVersion"]),
-  mcp: new Set(["name", "transport", "enabled", "approvalMode", "useBearerToken", "marketplaceId", "marketplaceVersion"]),
+  skill: new Set(["scope", "enabled", "marketplaceId", "marketplaceVersion", "updatedAt"]),
+  mcp: new Set(["transport", "enabled", "approvalMode", "marketplaceId", "marketplaceVersion", "updatedAt"]),
 };
 
 export function tenantResourceKind(value: string): CloudTenantResourceKind | undefined {
@@ -44,6 +44,21 @@ export function tenantResourcePayload(kind: CloudTenantResourceKind, value: unkn
   const hasInvalidValue = Object.values(payload).some((field) => field !== null && !["string", "number", "boolean"].includes(typeof field));
   if (hasInvalidValue) throw new Error("租户资源只允许同步简单元数据");
   if (Object.values(payload).some((field) => typeof field === "string" && field.length > 2048)) throw new Error("租户资源字段过长");
+  const validTimestamp = (timestamp: unknown) => typeof timestamp === "string"
+    && Number.isFinite(Date.parse(timestamp)) && new Date(timestamp).toISOString() === timestamp;
+  if (kind === "skill" && (
+    typeof payload.marketplaceId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(payload.marketplaceId)
+    || typeof payload.marketplaceVersion !== "string" || !payload.marketplaceVersion || payload.marketplaceVersion.length > 80
+    || (payload.scope !== "global" && payload.scope !== "project")
+    || typeof payload.enabled !== "boolean" || !validTimestamp(payload.updatedAt)
+  )) throw new Error("租户资源 Skill 目录字段无效");
+  if (kind === "mcp" && (
+    typeof payload.marketplaceId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(payload.marketplaceId)
+    || typeof payload.marketplaceVersion !== "string" || !payload.marketplaceVersion || payload.marketplaceVersion.length > 80
+    || (payload.transport !== "stdio" && payload.transport !== "http")
+    || (payload.approvalMode !== "auto" && payload.approvalMode !== "prompt" && payload.approvalMode !== "writes")
+    || typeof payload.enabled !== "boolean" || !validTimestamp(payload.updatedAt)
+  )) throw new Error("租户资源 MCP 目录字段无效");
   const serialized = JSON.stringify(payload);
   if (serialized.length > 32 * 1024) throw new Error("租户资源内容超过 32KB 限制");
   return JSON.parse(serialized) as Record<string, unknown>;

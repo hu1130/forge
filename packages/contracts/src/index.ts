@@ -113,6 +113,46 @@ export interface CloudTaskMetadata {
   updatedAt: string;
 }
 
+export interface CloudSkillCatalogMetadata {
+  marketplaceId: string;
+  marketplaceVersion: string;
+  scope: SkillScope;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface CloudMcpCatalogMetadata {
+  marketplaceId: string;
+  marketplaceVersion: string;
+  transport: McpTransport;
+  enabled: boolean;
+  approvalMode: McpApprovalMode;
+  updatedAt: string;
+}
+
+export type ExtensionCatalogMetadata = CloudSkillCatalogMetadata | CloudMcpCatalogMetadata;
+
+export interface ExtensionCatalogEntry {
+  kind: "skill" | "mcp";
+  key: string;
+  label: string;
+  metadata: ExtensionCatalogMetadata;
+}
+
+export interface ExtensionSyncReceipt {
+  resourceVersion: number;
+  localUpdatedAt: string;
+}
+
+export interface ExtensionSyncSnapshot {
+  entries: ExtensionCatalogEntry[];
+  receipts: Record<string, ExtensionSyncReceipt>;
+  excluded: {
+    customSkills: number;
+    customMcpServers: number;
+  };
+}
+
 export interface QueuedTurn {
   id: string;
   clientUserMessageId: string;
@@ -249,6 +289,7 @@ export interface SkillInfo {
   sourcePath: string;
   enabled: boolean;
   installedAt: string;
+  updatedAt: string;
   marketplaceId?: string;
   marketplaceVersion?: string;
   status: "ready" | "disabled" | "error";
@@ -275,6 +316,7 @@ export interface McpServerInfo {
   status: McpConnectionStatus;
   tools: Array<{ name: string; title?: string; description?: string }>;
   createdAt: string;
+  updatedAt: string;
   marketplaceId?: string;
   marketplaceVersion?: string;
 }

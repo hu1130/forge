@@ -84,7 +84,7 @@ const tenantStore = new QaTenantStore();
 const app = await createCloudApi({
   store,
   tenantStore,
-  allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"],
+  allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"],
   cookieSecure: false,
 });
 const qaEmail = "forge-qa@example.test";
@@ -120,6 +120,20 @@ app.post("/__qa/mutate-task/:key", async (request, reply) => {
     key: current.key,
     expectedVersion: current.version,
     payload: { ...current.payload, title, updatedAt: new Date(Date.now() + 1_000).toISOString() },
+  });
+});
+app.post("/__qa/mutate-extension/:kind/:key", async (request, reply) => {
+  const kind = request.params.kind;
+  if (kind !== "skill" && kind !== "mcp") return reply.code(400).send({ message: "QA extension kind invalid" });
+  const identity = await ensureQaAccount();
+  const current = (await tenantStore.listResources(identity, kind)).find((resource) => resource.key === request.params.key);
+  if (!current) return reply.code(404).send({ message: "QA extension resource not found" });
+  const enabled = typeof request.body?.enabled === "boolean" ? request.body.enabled : !current.payload.enabled;
+  return tenantStore.upsertResource(identity, {
+    kind,
+    key: current.key,
+    expectedVersion: current.version,
+    payload: { ...current.payload, enabled, updatedAt: new Date(Date.now() + 1_000).toISOString() },
   });
 });
 app.get("/__qa/latest-identity", async (_request, reply) => {

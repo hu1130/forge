@@ -1,6 +1,6 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.13 在租户隔离基础上加入用户主动导入和冲突安全的云端任务目录同步，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.14 在租户隔离基础上加入冲突安全的任务与 Skill/MCP 云端目录同步，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
@@ -14,6 +14,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 - “设置 → 账户与云端”可主动把免登录任务复制到当前租户；原资料不会删除，同一来源任务不会重复导入，模型会话和等待队列不会迁移
 - 任务名称、置顶、归档状态和更新时间可手动同步到 Cloud；本机同步回执用于区分单边变化，双边变化必须由用户选择版本
 - 云端独有目录不会伪装成可继续执行的空任务；代码、工作区路径、完整对话、终端输出和密钥始终不进入任务目录 API
+- 市场 Skill/MCP 的安全目录可手动同步；自定义内容、可执行配置和凭据保持本机，扩展双边变化同样需要用户明确选择
 - 项目文件夹选择，以及按项目和租户隔离的本地任务列表
 - 新建、搜索、置顶、重命名、归档、恢复和永久删除任务
 - DeepSeek 多轮会话；Daemon 重启后可恢复同一 App Server 线程
@@ -45,7 +46,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.13.0.exe
+release/Forge-Setup-0.14.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -94,7 +95,7 @@ pnpm dev:cloud
 
 浏览器打开 `http://127.0.0.1:5173/?cloud=1`。`postgres-role` 会为新旧开发卷幂等配置非超级应用角色；Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接 `DATABASE_URL` 中的 `NOSUPERUSER NOBYPASSRLS` 角色。部署时应使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
-`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；用户可手动同步白名单任务目录元数据，但不会跨设备恢复完整任务。
+`apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；用户可手动同步白名单任务与市场扩展目录元数据，但不会跨设备恢复完整任务或自定义扩展。
 
 ## 构建 Windows 安装包
 
@@ -118,7 +119,9 @@ node scripts/verify-packaged-extensions.mjs
 node scripts/verify-packaged-mcp-call.mjs
 ```
 
-当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、跨设备完整任务恢复、Skill/MCP 云目录同步、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
+登录 Cloud 后可在“设置 → 账户与云端”手动同步任务目录以及从扩展市场安装的 Skill/MCP 安全目录。扩展同步只上传市场 ID、版本、作用域、连接类型、审批模式、启用状态和更新时间；自定义 Skill 内容、MCP 命令、地址、参数、环境变量、Token 与本机路径不会上传。首次同步建立回执，单边变化自动合并，两端同时变化时必须由用户选择。
+
+当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、跨设备完整任务恢复、自定义 Skill/MCP 加密备份、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
 
 ### 发布远程市场目录
 

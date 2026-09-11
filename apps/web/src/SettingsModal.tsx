@@ -314,7 +314,7 @@ export default function SettingsModal(props: SettingsModalProps) {
       <div className="settings-content">
         {(extensionError || extensionMessage) && <div className={`settings-feedback ${extensionError ? "feedback-error" : "feedback-success"}`} role={extensionError ? "alert" : "status"}>{extensionError || extensionMessage}</div>}
 
-        {tab === "account" && props.cloudWorkspace && <CloudWorkspacePanel {...props.cloudWorkspace} />}
+        {tab === "account" && props.cloudWorkspace && <CloudWorkspacePanel {...props.cloudWorkspace} onExtensionsChanged={loadExtensions} />}
 
         {tab === "providers" && <>
           <h3>模型提供商</h3><p>DeepSeek 通过 Responses API 接入 Codex App Server；任何失败都会直接显示，不会自动切换模型。</p>

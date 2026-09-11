@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Check, Cloud, Download, LoaderCircle, RefreshCw, ShieldCheck, UploadCloud } from "lucide-react";
+import { AlertTriangle, Check, Cloud, Download, LoaderCircle, PlugZap, RefreshCw, ShieldCheck, UploadCloud } from "lucide-react";
 import type {
-  CloudTaskMetadata, CloudTenantResource, CloudTenantResourcesPayload, ForgeTask,
-  LocalProfileImportResult, LocalProfileSummary, TaskSyncSnapshot,
+  CloudMcpCatalogMetadata, CloudSkillCatalogMetadata, CloudTaskMetadata, CloudTenantResource,
+  CloudTenantResourcesPayload, ExtensionCatalogEntry, ExtensionCatalogMetadata, ExtensionSyncSnapshot,
+  ForgeTask, LocalProfileImportResult, LocalProfileSummary, TaskSyncSnapshot,
 } from "@forge/contracts";
 
 interface AuthenticatedSession {
@@ -17,11 +18,18 @@ interface TaskConflict {
   remoteMetadata: CloudTaskMetadata;
 }
 
+interface ExtensionConflict {
+  local: ExtensionCatalogEntry;
+  remote: CloudTenantResource;
+  remoteMetadata: ExtensionCatalogMetadata;
+}
+
 interface CloudWorkspacePanelProps {
   session: AuthenticatedSession;
   cloudApiBase: string;
   anyTaskRunning: boolean;
   onTasksChanged: () => Promise<void>;
+  onExtensionsChanged: () => Promise<void>;
 }
 
 async function responsePayload<T>(response: Response, fallback: string) {
@@ -51,11 +59,63 @@ function sameMetadata(left: CloudTaskMetadata, right: CloudTaskMetadata) {
     && left.archived === right.archived && left.updatedAt === right.updatedAt;
 }
 
+function remoteExtensionMetadata(resource: CloudTenantResource): ExtensionCatalogMetadata | undefined {
+  const value = resource.payload;
+  if (typeof value.marketplaceId !== "string" || typeof value.marketplaceVersion !== "string"
+    || typeof value.enabled !== "boolean" || typeof value.updatedAt !== "string"
+    || !Number.isFinite(Date.parse(value.updatedAt))) return undefined;
+  if (resource.kind === "skill") {
+    if (value.scope !== "global" && value.scope !== "project") return undefined;
+    return {
+      marketplaceId: value.marketplaceId,
+      marketplaceVersion: value.marketplaceVersion,
+      scope: value.scope,
+      enabled: value.enabled,
+      updatedAt: value.updatedAt,
+    } satisfies CloudSkillCatalogMetadata;
+  }
+  if (resource.kind === "mcp") {
+    if ((value.transport !== "stdio" && value.transport !== "http")
+      || (value.approvalMode !== "auto" && value.approvalMode !== "prompt" && value.approvalMode !== "writes")
+    ) return undefined;
+    return {
+      marketplaceId: value.marketplaceId,
+      marketplaceVersion: value.marketplaceVersion,
+      transport: value.transport,
+      enabled: value.enabled,
+      approvalMode: value.approvalMode,
+      updatedAt: value.updatedAt,
+    } satisfies CloudMcpCatalogMetadata;
+  }
+  return undefined;
+}
+
+function sameExtensionMetadata(left: ExtensionCatalogMetadata, right: ExtensionCatalogMetadata) {
+  if ("scope" in left && "scope" in right) {
+    return left.marketplaceId === right.marketplaceId && left.marketplaceVersion === right.marketplaceVersion
+      && left.scope === right.scope && left.enabled === right.enabled && left.updatedAt === right.updatedAt;
+  }
+  if ("transport" in left && "transport" in right) {
+    return left.marketplaceId === right.marketplaceId && left.marketplaceVersion === right.marketplaceVersion
+      && left.transport === right.transport && left.enabled === right.enabled
+      && left.approvalMode === right.approvalMode && left.updatedAt === right.updatedAt;
+  }
+  return false;
+}
+
+function extensionReceiptKey(entry: Pick<ExtensionCatalogEntry, "kind" | "key">) {
+  return `${entry.kind}:${entry.key}`;
+}
+
 export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
   const [localProfile, setLocalProfile] = useState<LocalProfileSummary | null>(null);
   const [cloudTaskCount, setCloudTaskCount] = useState(0);
   const [cloudOnlyCount, setCloudOnlyCount] = useState(0);
   const [conflicts, setConflicts] = useState<TaskConflict[]>([]);
+  const [cloudExtensionCount, setCloudExtensionCount] = useState(0);
+  const [cloudOnlyExtensionCount, setCloudOnlyExtensionCount] = useState(0);
+  const [excludedExtensions, setExcludedExtensions] = useState<ExtensionSyncSnapshot["excluded"]>({ customSkills: 0, customMcpServers: 0 });
+  const [extensionConflicts, setExtensionConflicts] = useState<ExtensionConflict[]>([]);
   const [busy, setBusy] = useState<"loading" | "import" | "sync" | string>("loading");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -66,13 +126,21 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
     setBusy("loading");
     setError("");
     try {
-      const [localResponse, cloudResponse] = await Promise.all([
+      const [localResponse, cloudResponse, extensionResponse, cloudSkillsResponse, cloudMcpResponse] = await Promise.all([
         fetch("/api/local-profile/summary"),
         cloudRequest("/v1/tenant/resources?kind=task"),
+        fetch("/api/cloud-sync/extensions"),
+        cloudRequest("/v1/tenant/resources?kind=skill"),
+        cloudRequest("/v1/tenant/resources?kind=mcp"),
       ]);
       setLocalProfile(await responsePayload<LocalProfileSummary>(localResponse, "无法读取本机资料概况"));
       const cloud = await responsePayload<CloudTenantResourcesPayload>(cloudResponse, "无法读取云端任务目录");
+      const extensionSnapshot = await responsePayload<ExtensionSyncSnapshot>(extensionResponse, "无法读取本机扩展目录");
+      const cloudSkills = await responsePayload<CloudTenantResourcesPayload>(cloudSkillsResponse, "无法读取云端 Skill 目录");
+      const cloudMcp = await responsePayload<CloudTenantResourcesPayload>(cloudMcpResponse, "无法读取云端 MCP 目录");
       setCloudTaskCount(cloud.resources.length);
+      setExcludedExtensions(extensionSnapshot.excluded);
+      setCloudExtensionCount(cloudSkills.resources.length + cloudMcp.resources.length);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -98,7 +166,10 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
       body: JSON.stringify({ payload: taskMetadata(task), expectedVersion }),
     });
     const payload = await response.json().catch(() => ({})) as CloudTenantResource & { message?: string; current?: CloudTenantResource };
-    if (response.status === 409) return { conflict: payload.current };
+    if (response.status === 409) {
+      if (!payload.current) throw new Error(payload.message || "云端任务目录已被删除，请重新同步");
+      return { conflict: payload.current };
+    }
     if (!response.ok) throw new Error(payload.message || "任务目录上传失败");
     return { resource: payload as CloudTenantResource };
   };
@@ -221,20 +292,154 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
     }
   };
 
+  const recordExtensionReceipt = async (entry: ExtensionCatalogEntry, resource: CloudTenantResource) => {
+    const response = await fetch("/api/cloud-sync/extensions/receipt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: entry.kind,
+        key: entry.key,
+        resourceVersion: resource.version,
+        localUpdatedAt: entry.metadata.updatedAt,
+      }),
+    });
+    await responsePayload<ExtensionSyncSnapshot>(response, "无法保存扩展同步回执");
+  };
+
+  const uploadExtension = async (entry: ExtensionCatalogEntry, expectedVersion: number) => {
+    const response = await cloudRequest(`/v1/tenant/resources/${entry.kind}/${encodeURIComponent(entry.key)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-csrf-token": props.session.csrfToken },
+      body: JSON.stringify({ payload: entry.metadata, expectedVersion }),
+    });
+    const payload = await response.json().catch(() => ({})) as CloudTenantResource & { message?: string; current?: CloudTenantResource };
+    if (response.status === 409) {
+      if (!payload.current) throw new Error(payload.message || "云端扩展目录已被删除，请重新同步");
+      return { conflict: payload.current };
+    }
+    if (!response.ok) throw new Error(payload.message || "扩展目录上传失败");
+    return { resource: payload as CloudTenantResource };
+  };
+
+  const applyRemoteExtension = async (conflict: ExtensionConflict) => {
+    const response = await fetch(`/api/cloud-sync/extensions/${conflict.local.kind}/${encodeURIComponent(conflict.local.key)}/apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        metadata: conflict.remoteMetadata,
+        expectedLocalUpdatedAt: conflict.local.metadata.updatedAt,
+        resourceVersion: conflict.remote.version,
+      }),
+    });
+    await responsePayload<ExtensionSyncSnapshot>(response, "无法应用云端扩展目录信息");
+  };
+
+  const syncExtensionCatalog = async () => {
+    setBusy("extension-sync");
+    setError(""); setMessage(""); setExtensionConflicts([]);
+    try {
+      const [snapshotResponse, cloudSkillsResponse, cloudMcpResponse] = await Promise.all([
+        fetch("/api/cloud-sync/extensions"),
+        cloudRequest("/v1/tenant/resources?kind=skill"),
+        cloudRequest("/v1/tenant/resources?kind=mcp"),
+      ]);
+      const snapshot = await responsePayload<ExtensionSyncSnapshot>(snapshotResponse, "无法读取本机扩展目录");
+      const cloudSkills = await responsePayload<CloudTenantResourcesPayload>(cloudSkillsResponse, "无法读取云端 Skill 目录");
+      const cloudMcp = await responsePayload<CloudTenantResourcesPayload>(cloudMcpResponse, "无法读取云端 MCP 目录");
+      const cloudResources = [...cloudSkills.resources, ...cloudMcp.resources];
+      const remoteByKey = new Map(cloudResources.map((resource) => [`${resource.kind}:${resource.key}`, resource]));
+      const pending: ExtensionConflict[] = [];
+      let uploaded = 0;
+      let downloaded = 0;
+      let unchanged = 0;
+
+      for (const entry of snapshot.entries) {
+        const key = extensionReceiptKey(entry);
+        const remote = remoteByKey.get(key);
+        if (!remote) {
+          const result = await uploadExtension(entry, 0);
+          if (result.resource) { await recordExtensionReceipt(entry, result.resource); uploaded += 1; }
+          else if (result.conflict) {
+            const metadata = remoteExtensionMetadata(result.conflict);
+            if (metadata) pending.push({ local: entry, remote: result.conflict, remoteMetadata: metadata });
+          }
+          continue;
+        }
+        remoteByKey.delete(key);
+        const metadata = remoteExtensionMetadata(remote);
+        if (!metadata) throw new Error(`云端 ${entry.kind === "skill" ? "Skill" : "MCP"} 目录信息格式无效`);
+        const receipt = snapshot.receipts[key];
+        if (sameExtensionMetadata(entry.metadata, metadata)) {
+          await recordExtensionReceipt(entry, remote);
+          unchanged += 1;
+          continue;
+        }
+        if (receipt && entry.metadata.updatedAt !== receipt.localUpdatedAt && remote.version === receipt.resourceVersion) {
+          const result = await uploadExtension(entry, receipt.resourceVersion);
+          if (result.resource) { await recordExtensionReceipt(entry, result.resource); uploaded += 1; }
+          else if (result.conflict) {
+            const racedMetadata = remoteExtensionMetadata(result.conflict);
+            if (racedMetadata) pending.push({ local: entry, remote: result.conflict, remoteMetadata: racedMetadata });
+          }
+          continue;
+        }
+        if (receipt && entry.metadata.updatedAt === receipt.localUpdatedAt && remote.version !== receipt.resourceVersion) {
+          const conflict = { local: entry, remote, remoteMetadata: metadata };
+          await applyRemoteExtension(conflict);
+          downloaded += 1;
+          continue;
+        }
+        pending.push({ local: entry, remote, remoteMetadata: metadata });
+      }
+
+      setExcludedExtensions(snapshot.excluded);
+      setCloudExtensionCount(cloudResources.length + uploaded);
+      setCloudOnlyExtensionCount(remoteByKey.size);
+      setExtensionConflicts(pending);
+      if (downloaded) await props.onExtensionsChanged();
+      setMessage(`扩展目录同步完成：上传 ${uploaded}，应用云端 ${downloaded}，无需更新 ${unchanged}，冲突 ${pending.length}。`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const resolveExtensionConflict = async (conflict: ExtensionConflict, choice: "local" | "cloud") => {
+    setBusy(`extension-conflict:${extensionReceiptKey(conflict.local)}`);
+    setError(""); setMessage("");
+    try {
+      if (choice === "local") {
+        const result = await uploadExtension(conflict.local, conflict.remote.version);
+        if (!result.resource) throw new Error("云端扩展目录再次发生变化，请重新同步后选择");
+        await recordExtensionReceipt(conflict.local, result.resource);
+      } else {
+        await applyRemoteExtension(conflict);
+        await props.onExtensionsChanged();
+      }
+      setExtensionConflicts((current) => current.filter((item) => extensionReceiptKey(item.local) !== extensionReceiptKey(conflict.local)));
+      setMessage(choice === "local" ? "已使用本机扩展状态更新云端。" : "已应用云端扩展状态；密钥和本机配置没有下载。" );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
   const disabled = Boolean(busy) || props.anyTaskRunning;
   return <div className="cloud-workspace-panel">
     <div className="settings-heading">
-      <div><h3>账户与云端目录</h3><p>管理当前个人租户的本机资料导入和任务目录同步。</p></div>
+      <div><h3>账户与云端目录</h3><p>管理当前个人租户的本机资料导入、任务目录和扩展目录同步。</p></div>
       <button type="button" disabled={Boolean(busy)} onClick={() => void loadOverview()}><RefreshCw className={busy === "loading" ? "spin" : ""} size={14} />刷新</button>
     </div>
 
     <div className="cloud-identity-card">
       <span><Cloud size={18} /></span>
       <div><strong>{props.session.tenant.name}</strong><small>{props.session.user.email} · {props.session.tenant.role} · 已隔离</small></div>
-      <em>{cloudTaskCount} 条云端目录</em>
+      <em>{cloudTaskCount} 个云端任务 · {cloudExtensionCount} 个云端扩展</em>
     </div>
 
-    <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>只同步目录元数据</strong><small>任务名称、置顶、归档状态和更新时间可以进入 Cloud；代码、工作区路径、对话、终端输出与密钥不会上传。</small></span></div>
+    <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>只同步安全目录元数据</strong><small>任务目录和市场扩展的 ID、版本、作用域及启用状态可以进入 Cloud；代码、Skill 内容、MCP 命令、地址、参数、环境变量、Token 与本机路径不会上传。</small></span></div>
 
     <div className="cloud-action-grid">
       <section>
@@ -247,11 +452,18 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
         <div><strong>同步任务目录</strong><p>根据本机回执合并单边更新；两端都变更时由你选择，不会静默覆盖。</p></div>
         <button type="button" disabled={disabled} onClick={() => void syncTaskCatalog()}>{busy === "sync" ? <LoaderCircle className="spin" size={14} /> : <UploadCloud size={14} />}{busy === "sync" ? "同步中…" : "立即同步"}</button>
       </section>
+      <section className="cloud-extension-action">
+        <PlugZap size={18} />
+        <div><strong>同步 Skill/MCP 目录</strong><p>同步从扩展市场安装的版本和启用状态；自定义扩展与所有可执行配置继续留在本机。</p></div>
+        <button type="button" aria-busy={busy === "extension-sync"} disabled={disabled} onClick={() => void syncExtensionCatalog()}>{busy === "extension-sync" ? <LoaderCircle className="spin" size={14} /> : <PlugZap size={14} />}{busy === "extension-sync" ? "同步中…" : "同步扩展目录"}</button>
+      </section>
     </div>
 
     {props.anyTaskRunning && <div className="cloud-sync-warning"><AlertTriangle size={15} />请先停止正在运行的任务，再导入或同步目录。</div>}
     {(error || message) && <div className={`settings-feedback ${error ? "feedback-error" : "feedback-success"}`} role={error ? "alert" : "status"}>{error || message}</div>}
     {cloudOnlyCount > 0 && <div className="cloud-sync-warning"><Cloud size={15} />云端还有 {cloudOnlyCount} 个仅存在于其他设备的目录记录。由于完整任务没有上传，本机不会创建虚假的空任务。</div>}
+    {cloudOnlyExtensionCount > 0 && <div className="cloud-sync-warning"><PlugZap size={15} />云端还有 {cloudOnlyExtensionCount} 个仅存在于其他设备的扩展目录。请在扩展市场安装对应版本后再同步，Forge 不会下载未知代码或命令。</div>}
+    {(excludedExtensions.customSkills > 0 || excludedExtensions.customMcpServers > 0) && <div className="cloud-sync-warning"><ShieldCheck size={15} />本次已排除 {excludedExtensions.customSkills} 个自定义 Skill 和 {excludedExtensions.customMcpServers} 个自定义 MCP；它们的内容与配置只保存在本机。</div>}
 
     {conflicts.length > 0 && <section className="sync-conflicts" aria-labelledby="sync-conflicts-title">
       <div><h4 id="sync-conflicts-title">需要处理的冲突</h4><span>{conflicts.length}</span></div>
@@ -262,6 +474,19 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
         <div>
           <button type="button" disabled={Boolean(busy)} onClick={() => void resolveConflict(conflict, "cloud")}>使用云端</button>
           <button className="primary-small" type="button" disabled={Boolean(busy)} onClick={() => void resolveConflict(conflict, "local")}>{busy === `conflict:${conflict.local.id}` ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}使用本机</button>
+        </div>
+      </article>)}
+    </section>}
+
+    {extensionConflicts.length > 0 && <section className="sync-conflicts" aria-labelledby="extension-sync-conflicts-title">
+      <div><h4 id="extension-sync-conflicts-title">需要处理的扩展冲突</h4><span>{extensionConflicts.length}</span></div>
+      <p>这些市场扩展的本机状态和云端目录都发生过变化。选择云端只会应用安全状态，不会下载密钥、命令或自定义内容。</p>
+      {extensionConflicts.map((conflict) => <article key={extensionReceiptKey(conflict.local)}>
+        <AlertTriangle size={16} />
+        <div><strong>{conflict.local.label} · {conflict.local.kind === "skill" ? "Skill" : "MCP"}</strong><small>本机：{conflict.local.metadata.enabled ? "已启用" : "已停用"} · 云端：{conflict.remoteMetadata.enabled ? "已启用" : "已停用"} · 版本 {conflict.remoteMetadata.marketplaceVersion}</small></div>
+        <div>
+          <button type="button" disabled={Boolean(busy)} onClick={() => void resolveExtensionConflict(conflict, "cloud")}>使用云端</button>
+          <button className="primary-small" type="button" disabled={Boolean(busy)} onClick={() => void resolveExtensionConflict(conflict, "local")}>{busy === `extension-conflict:${extensionReceiptKey(conflict.local)}` ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}使用本机</button>
         </div>
       </article>)}
     </section>}

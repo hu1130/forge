@@ -305,6 +305,47 @@ test("tenant resource APIs derive ownership from each authenticated session", as
     assert.equal(expectedWrite.statusCode, 200);
     assert.equal(expectedWrite.json().version, 2);
 
+    const extensionUpdatedAt = new Date().toISOString();
+    const putSkill = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/skill/global%3Aforge-code-review",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: {
+        payload: {
+          marketplaceId: "forge-code-review",
+          marketplaceVersion: "1.0.0",
+          scope: "global",
+          enabled: true,
+          updatedAt: extensionUpdatedAt,
+        },
+        expectedVersion: 0,
+      },
+    });
+    assert.equal(putSkill.statusCode, 200);
+    assert.equal(putSkill.json().key, "global:forge-code-review");
+    assert.deepEqual(Object.keys(putSkill.json().payload).sort(), ["enabled", "marketplaceId", "marketplaceVersion", "scope", "updatedAt"]);
+
+    const putMcp = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/mcp/market%3Acontext7",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: {
+        payload: {
+          marketplaceId: "context7",
+          marketplaceVersion: "2.0.0",
+          transport: "http",
+          enabled: false,
+          approvalMode: "writes",
+          updatedAt: extensionUpdatedAt,
+        },
+        expectedVersion: 0,
+      },
+    });
+    assert.equal(putMcp.statusCode, 200);
+
+    const listSkillsB = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=skill", headers: { cookie: accountB.cookie } });
+    assert.deepEqual(listSkillsB.json().resources, []);
+
     const listA = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountA.cookie } });
     const listB = await app.inject({ method: "GET", url: "/v1/tenant/resources?kind=task", headers: { cookie: accountB.cookie } });
     assert.equal(listA.json().tenantId, accountA.session.tenant.id);
@@ -319,6 +360,40 @@ test("tenant resource APIs derive ownership from each authenticated session", as
       payload: { payload: { name: "unsafe", apiKey: "must-not-sync" } },
     });
     assert.equal(secret.statusCode, 400);
+
+    const executableMcpConfig = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/mcp/unsafe-config",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: { payload: { marketplaceId: "unsafe", marketplaceVersion: "1", command: "powershell", args: "secret" } },
+    });
+    assert.equal(executableMcpConfig.statusCode, 400);
+
+    const credentialHint = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/mcp/credential-hint",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: {
+        payload: {
+          marketplaceId: "context7",
+          marketplaceVersion: "2.0.0",
+          transport: "http",
+          enabled: true,
+          approvalMode: "writes",
+          useBearerToken: true,
+          updatedAt: extensionUpdatedAt,
+        },
+      },
+    });
+    assert.equal(credentialHint.statusCode, 400);
+
+    const incompleteSkill = await app.inject({
+      method: "PUT",
+      url: "/v1/tenant/resources/skill/incomplete",
+      headers: { cookie: accountA.cookie, origin, "x-csrf-token": accountA.session.csrfToken },
+      payload: { payload: { marketplaceId: "forge-code-review", marketplaceVersion: "1.0.0", scope: "global" } },
+    });
+    assert.equal(incompleteSkill.statusCode, 400);
 
     const noCsrf = await app.inject({ method: "DELETE", url: "/v1/tenant/resources/task/shared-task-key", headers: { cookie: accountA.cookie, origin } });
     assert.equal(noCsrf.statusCode, 403);

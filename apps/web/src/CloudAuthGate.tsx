@@ -120,7 +120,7 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
       </section>
       <section className="cloud-auth-panel" aria-labelledby="cloud-auth-title">
         <div className="cloud-auth-card">
-          <span className="cloud-auth-step">0.13 云端任务目录</span>
+          <span className="cloud-auth-step">0.14 安全扩展目录</span>
           <h2 id="cloud-auth-title">{mode === "login" ? "登录 Forge" : "创建 Forge 账户"}</h2>
           <p>{mode === "login" ? "继续进入你的个人工作区" : "注册后会自动创建一个隔离的个人租户"}</p>
           <form onSubmit={submit} noValidate>

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -76,6 +76,99 @@ test("the unauthenticated local profile keeps its legacy storage location", asyn
     const persisted = JSON.parse(await readFile(path.join(dataDir, "state.json"), "utf8"));
     assert.equal(task.tenantId, "local");
     assert.equal(persisted.tasks[0].title, "本地任务");
+  } finally {
+    if (previousDataDir === undefined) delete process.env.FORGE_DATA_DIR;
+    else process.env.FORGE_DATA_DIR = previousDataDir;
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("extension catalog sync includes only safe marketplace metadata and uses conflict receipts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-extension-sync-"));
+  const previousDataDir = process.env.FORGE_DATA_DIR;
+  process.env.FORGE_DATA_DIR = dataDir;
+  try {
+    const extensions = new ExtensionStore(tenantA);
+    await extensions.load();
+    await extensions.importSkill(path.resolve("tests/fixtures/sample-skill"), "global", "C:\\workspace-a");
+    await extensions.addMcpServer({ name: "private-http", transport: "http", url: "https://private.example/mcp", useBearerToken: true });
+    const marketSkill = await extensions.installMarketSkill(
+      path.resolve("apps/daemon/resources/marketplace/skills/forge-code-review"),
+      "global",
+      "C:\\workspace-a",
+      "forge-code-review",
+      "1.0.0",
+    );
+    await extensions.installMarketMcp({
+      name: "filesystem",
+      transport: "stdio",
+      command: "cmd",
+      args: ["/c", "npx", "C:\\private-workspace"],
+      envVars: ["SECRET_TOKEN"],
+      approvalMode: "writes",
+      marketplaceId: "mcp-filesystem",
+      marketplaceVersion: "1.0.0",
+    });
+
+    const snapshot = extensions.extensionSyncSnapshot("C:\\workspace-a");
+    assert.equal(snapshot.entries.length, 2);
+    assert.deepEqual(snapshot.excluded, { customSkills: 1, customMcpServers: 1 });
+    const serialized = JSON.stringify(snapshot.entries);
+    assert.doesNotMatch(serialized, /private-workspace|private\.example|SECRET_TOKEN/);
+    assert.doesNotMatch(serialized, /"(?:sourcePath|workspacePath|command|args|envVars|url|tokenConfigured|useBearerToken)"/);
+
+    const skillEntry = snapshot.entries.find((entry) => entry.kind === "skill");
+    assert.ok(skillEntry);
+    assert.deepEqual(Object.keys(skillEntry.metadata).sort(), ["enabled", "marketplaceId", "marketplaceVersion", "scope", "updatedAt"]);
+    await extensions.recordExtensionSync("skill", skillEntry.key, {
+      resourceVersion: 1,
+      localUpdatedAt: skillEntry.metadata.updatedAt,
+    }, "C:\\workspace-a");
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await extensions.setSkillEnabled(marketSkill.id, false);
+    await assert.rejects(
+      extensions.recordExtensionSync("skill", skillEntry.key, {
+        resourceVersion: 2,
+        localUpdatedAt: skillEntry.metadata.updatedAt,
+      }, "C:\\workspace-a"),
+      /扩展已发生变化/,
+    );
+
+    const changed = extensions.extensionSyncSnapshot("C:\\workspace-a").entries.find((entry) => entry.kind === "skill");
+    assert.ok(changed && "scope" in changed.metadata);
+    const remoteUpdatedAt = new Date(Date.now() + 1_000).toISOString();
+    const applied = await extensions.applyCloudExtensionMetadata("skill", skillEntry.key, {
+      ...changed.metadata,
+      enabled: true,
+      updatedAt: remoteUpdatedAt,
+    }, changed.metadata.updatedAt, 2, "C:\\workspace-a");
+    const appliedSkill = applied.entries.find((entry) => entry.kind === "skill");
+    assert.equal(appliedSkill.metadata.enabled, true);
+    assert.deepEqual(applied.receipts[`skill:${skillEntry.key}`], { resourceVersion: 2, localUpdatedAt: remoteUpdatedAt });
+    await extensions.restoreExtensionSyncState("skill", skillEntry.key, changed.metadata, {
+      resourceVersion: 1,
+      localUpdatedAt: skillEntry.metadata.updatedAt,
+    }, "C:\\workspace-a");
+    const restored = extensions.extensionSyncSnapshot("C:\\workspace-a");
+    assert.equal(restored.entries.find((entry) => entry.kind === "skill").metadata.enabled, false);
+    assert.equal(restored.receipts[`skill:${skillEntry.key}`].resourceVersion, 1);
+
+    const extensionStatePath = path.join(dataDir, "tenants", tenantStorageKey(tenantA.tenantId), "extensions.json");
+    const legacyState = JSON.parse(await readFile(extensionStatePath, "utf8"));
+    legacyState.schemaVersion = 2;
+    delete legacyState.extensionSyncReceipts;
+    for (const skill of legacyState.skills) delete skill.updatedAt;
+    for (const server of legacyState.mcpServers) delete server.updatedAt;
+    await writeFile(extensionStatePath, `${JSON.stringify(legacyState, null, 2)}\n`, "utf8");
+
+    const migratedStore = new ExtensionStore(tenantA);
+    await migratedStore.load();
+    const migratedState = JSON.parse(await readFile(extensionStatePath, "utf8"));
+    assert.equal(migratedState.schemaVersion, 3);
+    assert.deepEqual(migratedState.extensionSyncReceipts, {});
+    assert.equal(migratedState.skills.every((skill) => skill.updatedAt === skill.installedAt), true);
+    assert.equal(migratedState.mcpServers.every((server) => server.updatedAt === server.createdAt), true);
   } finally {
     if (previousDataDir === undefined) delete process.env.FORGE_DATA_DIR;
     else process.env.FORGE_DATA_DIR = previousDataDir;

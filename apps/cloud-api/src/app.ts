@@ -1,7 +1,7 @@
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyReply } from "fastify";
+import Fastify, { type FastifyReply, type FastifyServerOptions } from "fastify";
 import type { CloudAuthSession, CloudSessionListPayload } from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
 import type { EmailDelivery } from "./email-delivery.js";
@@ -16,7 +16,7 @@ export interface CloudApiOptions {
   emailDelivery?: EmailDelivery;
   publicWebUrl?: string;
   trustProxy?: boolean;
-  logger?: boolean;
+  logger?: FastifyServerOptions["logger"];
 }
 
 const COOKIE_NAME = "forge_cloud_session";
@@ -48,6 +48,7 @@ export async function createCloudApi(options: CloudApiOptions) {
   await app.register(rateLimit, { global: false });
 
   app.addHook("onRequest", async (request, reply) => {
+    reply.header("x-request-id", request.id);
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "no-referrer");
     reply.header("cache-control", "no-store");
@@ -82,6 +83,8 @@ export async function createCloudApi(options: CloudApiOptions) {
     const action = await auth.createEmailVerification(userId);
     if (action) await options.emailDelivery.sendEmailVerification(action.user.email, actionUrl("verify", action.token));
   };
+
+  app.get("/v1/live", async () => ({ ok: true }));
 
   app.get("/v1/health", async (_request, reply) => {
     try {

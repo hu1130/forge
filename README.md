@@ -1,6 +1,6 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.15 在安全的租户目录同步基础上补齐邮箱验证、密码找回与登录设备管理，并提供可部署的 Cloud API 容器，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.17 在 MySQL Cloud API 基础上补齐生产配置预检、日志脱敏、存活/就绪探针和数据库备份恢复工具，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
@@ -51,7 +51,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.16.0.exe
+release/Forge-Setup-0.17.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -100,6 +100,8 @@ pnpm dev:cloud
 浏览器打开 `http://127.0.0.1:5173/?cloud=1`。Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接没有 DDL 权限的 `forge_app` 账号。MySQL 没有 PostgreSQL 原生 Row-Level Security，租户隔离由服务端会话、活动成员校验和所有资源 SQL 的显式 `tenant_id` 条件共同保证。部署时必须使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
 开发环境未配置 Resend 时，Cloud API 会把验证与重置链接输出到本机终端，便于完成端到端测试；生产环境缺少 Resend 配置会拒绝启动。容器部署、环境变量与上线验收步骤见 [Cloud 部署文档](docs/cloud-deployment.md)。
+
+生产部署前运行 `pnpm cloud:preflight`，数据库备份与恢复演练见 [MySQL 备份文档](docs/mysql-backup.md)。预检只输出非敏感摘要，不会打印数据库或 Resend 凭据。
 
 `apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；用户可手动同步白名单任务与市场扩展目录元数据，但不会跨设备恢复完整任务或自定义扩展。
 

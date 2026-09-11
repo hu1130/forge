@@ -20,24 +20,34 @@ FORGE_CLOUD_PUBLIC_WEB_URL=https://forge.example.com/?cloud=1
 FORGE_CLOUD_RESEND_API_KEY=由托管平台的 Secret Manager 注入
 FORGE_CLOUD_EMAIL_FROM=Forge <no-reply@example.com>
 FORGE_CLOUD_TRUST_PROXY=1
+FORGE_CLOUD_DB_POOL_SIZE=10
+FORGE_CLOUD_LOG_LEVEL=info
 ```
 
 `FORGE_CLOUD_TRUST_PROXY=1` 只适用于服务确实位于可信反向代理之后。不要使用 `*` 作为允许来源，也不要把数据库或邮件密钥写入镜像、Git 或桌面端。
 
 ## 构建和启动
 
-从仓库根目录执行：
+先从仓库根目录执行生产配置预检。预检不会输出数据库密码或 Resend Key：
 
 ```powershell
-docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.16.0 .
-docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.16.0
+pnpm cloud:preflight
 ```
 
-容器以非 root 用户运行，`/v1/health` 同时检查 Cloud API 和数据库。启动时迁移进程会取得 MySQL 命名锁，并只执行尚未登记的迁移，避免多实例重复迁移。MySQL 没有原生 Row-Level Security，因此运行账号不得拥有 DDL 权限，Cloud API 的所有租户资源操作必须同时通过活动成员校验和显式 `tenant_id` 条件。
+通过后构建和启动：
+
+```powershell
+docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.17.0 .
+docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.17.0
+```
+
+容器以非 root 用户运行，`/v1/live` 只检查进程存活，`/v1/health` 检查 Cloud API 和数据库就绪状态；每个响应都包含 `x-request-id`。生产日志会隐藏 Cookie、Authorization 和 Set-Cookie。启动时迁移进程会取得 MySQL 命名锁，并只执行尚未登记的迁移，避免多实例重复迁移。MySQL 没有原生 Row-Level Security，因此运行账号不得拥有 DDL 权限，Cloud API 的所有租户资源操作必须同时通过活动成员校验和显式 `tenant_id` 条件。
+
+数据库自动快照、下载备份和恢复演练见 [MySQL 备份与恢复](mysql-backup.md)。
 
 ## 上线验收
 
-1. `GET /v1/health` 返回 `{ "ok": true }`。
+1. `GET /v1/live` 和 `GET /v1/health` 都返回 `{ "ok": true }`，且响应包含 `x-request-id`。
 2. 新用户注册后未验证邮箱不能读取租户数据。
 3. 验证链接只能使用一次，24 小时后失效。
 4. 密码重置链接只能使用一次，30 分钟后失效，并撤销该用户全部旧会话。

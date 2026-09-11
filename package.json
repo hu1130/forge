@@ -1,6 +1,6 @@
 {
   "name": "local-codex-like",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -8,6 +8,9 @@
     "dev": "concurrently -k -n daemon,web -c yellow,blue \"pnpm --filter @forge/daemon dev\" \"pnpm --filter @forge/web dev\"",
     "dev:cloud": "concurrently -k -n cloud,daemon,web -c green,yellow,blue \"pnpm --filter @forge/cloud-api dev\" \"pnpm --filter @forge/daemon dev\" \"pnpm --filter @forge/web dev\"",
     "dev:desktop": "concurrently -k -n daemon,web,desktop -c yellow,blue,magenta \"pnpm --filter @forge/daemon dev\" \"pnpm --filter @forge/web dev\" \"wait-on http://127.0.0.1:5173 http://127.0.0.1:4782/api/health && pnpm --filter @forge/desktop dev\"",
+    "cloud:preflight": "pnpm --filter @forge/cloud-api build && pnpm --filter @forge/cloud-api preflight",
+    "cloud:backup": "node ./scripts/mysql-maintenance.mjs backup",
+    "cloud:restore": "node ./scripts/mysql-maintenance.mjs restore",
     "build": "pnpm -r --if-present build",
     "dist:win": "pnpm --filter @forge/desktop dist",
     "typecheck": "pnpm -r --if-present typecheck",

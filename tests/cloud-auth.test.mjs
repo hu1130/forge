@@ -366,6 +366,7 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   const accountSecurityMigration = await readFile("apps/cloud-api/migrations/003_account_security.sql", "utf8");
   const mysqlStore = await readFile("apps/cloud-api/src/mysql-store.ts", "utf8");
   const cloudServer = await readFile("apps/cloud-api/src/server.ts", "utf8");
+  const deploymentConfig = await readFile("apps/cloud-api/src/deployment-config.ts", "utf8");
   const emailDelivery = await readFile("apps/cloud-api/src/email-delivery.ts", "utf8");
   const cloudDockerfile = await readFile("apps/cloud-api/Dockerfile", "utf8");
   const appUser = await readFile("infra/mysql/init/001_app_user.sql", "utf8");
@@ -386,11 +387,12 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   assert.match(mysqlStore, /WHERE tenant_id = \? AND kind = \?/);
   assert.match(mysqlStore, /GET_LOCK/);
   assert.match(mysqlStore, /forge_schema_migrations/);
-  assert.match(cloudServer, /FORGE_CLOUD_MIGRATION_DATABASE_URL/);
-  assert.match(cloudServer, /FORGE_CLOUD_RESEND_API_KEY/);
+  assert.match(deploymentConfig, /FORGE_CLOUD_MIGRATION_DATABASE_URL/);
+  assert.match(deploymentConfig, /FORGE_CLOUD_RESEND_API_KEY/);
+  assert.match(cloudServer, /req\.headers\.cookie/);
   assert.match(emailDelivery, /https:\/\/api\.resend\.com\/emails/);
   assert.match(cloudDockerfile, /USER node/);
-  assert.match(cloudDockerfile, /\/v1\/health/);
+  assert.match(cloudDockerfile, /\/v1\/live/);
   assert.match(appUser, /GRANT SELECT, INSERT, UPDATE, DELETE ON forge\.\*/);
   assert.doesNotMatch(appUser, /GRANT[^;\n]*(?:CREATE|ALTER|DROP)/i);
   assert.match(gate, /\/v1\/auth\/email\/verify/);

@@ -25,6 +25,6 @@ COPY --from=build --chown=node:node /prod/cloud-api ./
 USER node
 EXPOSE 4790
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.FORGE_CLOUD_PORT||4790)+'/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.FORGE_CLOUD_PORT||4790)+'/v1/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "dist/server.js"]

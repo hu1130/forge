@@ -28,3 +28,42 @@ jobs:
         run: pnpm typecheck
       - name: Build
         run: pnpm build
+
+  mysql-8-4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: forge
+          MYSQL_USER: forge_migrator
+          MYSQL_PASSWORD: forge_dev_only
+          MYSQL_ROOT_PASSWORD: forge_root_dev_only
+        ports:
+          - 33069:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pforge_root_dev_only --silent"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Configure runtime database user
+        run: >-
+          docker exec "${{ job.services.mysql.id }}" mysql -uroot -pforge_root_dev_only
+          -e "CREATE USER IF NOT EXISTS 'forge_app'@'%' IDENTIFIED BY 'forge_app_dev_only';
+          GRANT SELECT, INSERT, UPDATE, DELETE ON forge.* TO 'forge_app'@'%'; FLUSH PRIVILEGES;"
+      - name: Run MySQL integration test
+        run: pnpm test:mysql

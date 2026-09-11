@@ -1,19 +1,12 @@
-ALTER TABLE forge_users
-  ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
-
 CREATE TABLE IF NOT EXISTS forge_auth_action_tokens (
-  id uuid PRIMARY KEY,
-  user_id uuid NOT NULL REFERENCES forge_users(id) ON DELETE CASCADE,
-  purpose text NOT NULL CHECK (purpose IN ('verify_email', 'reset_password')),
-  token_hash char(64) NOT NULL UNIQUE,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  expires_at timestamptz NOT NULL,
-  consumed_at timestamptz
-);
-
-CREATE INDEX IF NOT EXISTS forge_auth_action_tokens_active
-  ON forge_auth_action_tokens (user_id, purpose, expires_at)
-  WHERE consumed_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS forge_sessions_user_created
-  ON forge_sessions (user_id, created_at DESC);
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  purpose ENUM('verify_email', 'reset_password') NOT NULL,
+  token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at DATETIME(3) NOT NULL,
+  consumed_at DATETIME(3),
+  UNIQUE KEY forge_auth_action_tokens_hash_unique (token_hash),
+  KEY forge_auth_action_tokens_active (user_id, purpose, consumed_at, expires_at),
+  CONSTRAINT forge_auth_action_tokens_user_fk FOREIGN KEY (user_id) REFERENCES forge_users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

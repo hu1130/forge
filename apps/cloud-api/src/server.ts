@@ -1,14 +1,13 @@
-import { Pool } from "pg";
 import { createCloudApi } from "./app.js";
 import { ConsoleEmailDelivery, ResendEmailDelivery } from "./email-delivery.js";
-import { migrateDatabase, PostgresAuthStore } from "./postgres-store.js";
+import { createForgeMySqlPool, migrateDatabase, MySqlAuthStore } from "./mysql-store.js";
 
 const production = process.env.NODE_ENV === "production";
 const databaseUrl = process.env.DATABASE_URL?.trim()
-  || (production ? "" : "postgresql://forge_app:forge_app_dev_only@127.0.0.1:54329/forge");
+  || (production ? "" : "mysql://forge_app:forge_app_dev_only@127.0.0.1:33069/forge");
 if (!databaseUrl) throw new Error("生产环境的 Cloud API 需要 DATABASE_URL，未自动降级到本地文件数据库");
 const migrationDatabaseUrl = process.env.FORGE_CLOUD_MIGRATION_DATABASE_URL?.trim()
-  || (production ? "" : "postgresql://forge:forge_dev_only@127.0.0.1:54329/forge");
+  || (production ? "" : "mysql://forge_migrator:forge_dev_only@127.0.0.1:33069/forge");
 if (!migrationDatabaseUrl) throw new Error("生产环境的 Cloud API 需要独立的 FORGE_CLOUD_MIGRATION_DATABASE_URL");
 
 const host = process.env.FORGE_CLOUD_HOST || (production ? "0.0.0.0" : "127.0.0.1");
@@ -26,14 +25,14 @@ if (production && (!resendApiKey || !emailFrom)) throw new Error("生产环境�
 const emailDelivery = resendApiKey && emailFrom
   ? new ResendEmailDelivery({ apiKey: resendApiKey, from: emailFrom })
   : new ConsoleEmailDelivery();
-const migrationPool = new Pool({ connectionString: migrationDatabaseUrl, max: 1 });
+const migrationPool = createForgeMySqlPool(migrationDatabaseUrl, 1);
 try {
   await migrateDatabase(migrationPool);
 } finally {
   await migrationPool.end();
 }
-const pool = new Pool({ connectionString: databaseUrl, max: Number(process.env.FORGE_CLOUD_DB_POOL_SIZE || 10) });
-const store = new PostgresAuthStore(pool);
+const pool = createForgeMySqlPool(databaseUrl, Number(process.env.FORGE_CLOUD_DB_POOL_SIZE || 10));
+const store = new MySqlAuthStore(pool);
 const app = await createCloudApi({
   store,
   tenantStore: store,

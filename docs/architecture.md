@@ -1,6 +1,6 @@
 # 架构基线
 
-状态：0.15 账户安全与 Cloud API 部署基线已落地，本机执行面与云端控制面并行演进。
+状态：0.16 Cloud API 已切换为 MySQL，本机执行面与云端控制面并行演进。
 
 ## 运行结构
 
@@ -11,7 +11,7 @@ Forge Cloud Web / Desktop（可选登录）
 中心 Cloud API
   ├─ 用户与会话
   ├─ 个人租户与成员关系
-  └─ PostgreSQL 租户资源登记 + RLS（仅服务端连接）
+  └─ MySQL 租户资源登记（仅服务端连接）
 
 共享 React Client
   ├─ Electron Desktop
@@ -77,6 +77,12 @@ Codex App Server 是唯一 Agent 执行底座。Provider Gateway 将各厂商的
 - 账户页可查看有效会话并撤销单个或其他全部会话；当前版本有意不采集设备名、IP 与硬件指纹。
 - PostgreSQL 迁移加入 advisory lock 与迁移台账；真实数据库验收覆盖令牌单次消费、会话归属和 FORCE RLS 租户隔离。
 - Cloud API 提供非 root Node 24 容器、健康检查、生产环境强校验和 Resend 邮件投递适配；桌面安装包仍不携带数据库凭据。
+
+0.16 已经实现：
+
+- Cloud API 数据库驱动由 `pg` 切换为 `mysql2`，迁移脚本和本机 Compose 基线改为 MySQL 8.4。
+- 租户资源操作保留服务端身份派生、活动成员校验和显式 `tenant_id` 条件；运行账号只授予 DML 权限。MySQL 不提供 PostgreSQL 原生 RLS，这一差异不会被隐藏。
+- MySQL 迁移使用命名锁和迁移台账；真实数据库验收覆盖令牌单次消费、会话归属、跨租户成员拒绝和运行账号 DDL 拒绝。
 
 后续租户业务数据遵循：
 

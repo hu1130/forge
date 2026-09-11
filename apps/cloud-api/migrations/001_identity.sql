@@ -1,41 +1,48 @@
 CREATE TABLE IF NOT EXISTS forge_users (
-  id uuid PRIMARY KEY,
-  email text NOT NULL,
-  display_name text NOT NULL,
-  password_hash text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  disabled_at timestamptz,
-  CONSTRAINT forge_users_email_normalized CHECK (email = lower(email))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS forge_users_email_unique ON forge_users (email);
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  email VARCHAR(320) NOT NULL,
+  display_name VARCHAR(200) NOT NULL,
+  password_hash VARCHAR(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  email_verified_at DATETIME(3),
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  disabled_at DATETIME(3),
+  CONSTRAINT forge_users_email_normalized CHECK (email = LOWER(email)),
+  UNIQUE KEY forge_users_email_unique (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS forge_tenants (
-  id uuid PRIMARY KEY,
-  name text NOT NULL,
-  slug text NOT NULL UNIQUE,
-  kind text NOT NULL CHECK (kind IN ('personal', 'team')),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  name VARCHAR(200) NOT NULL,
+  slug VARCHAR(200) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  kind ENUM('personal', 'team') NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY forge_tenants_slug_unique (slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS forge_tenant_memberships (
-  tenant_id uuid NOT NULL REFERENCES forge_tenants(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES forge_users(id) ON DELETE CASCADE,
-  role text NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
-  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS forge_tenant_memberships_user ON forge_tenant_memberships (user_id, status);
+  tenant_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  role ENUM('owner', 'admin', 'member') NOT NULL,
+  status ENUM('active', 'suspended') NOT NULL DEFAULT 'active',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (tenant_id, user_id),
+  KEY forge_tenant_memberships_user (user_id, status),
+  CONSTRAINT forge_membership_tenant_fk FOREIGN KEY (tenant_id) REFERENCES forge_tenants(id) ON DELETE CASCADE,
+  CONSTRAINT forge_membership_user_fk FOREIGN KEY (user_id) REFERENCES forge_users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS forge_sessions (
-  id uuid PRIMARY KEY,
-  user_id uuid NOT NULL,
-  tenant_id uuid NOT NULL,
-  token_hash char(64) NOT NULL UNIQUE,
-  csrf_token text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  expires_at timestamptz NOT NULL,
-  revoked_at timestamptz,
-  FOREIGN KEY (tenant_id, user_id) REFERENCES forge_tenant_memberships(tenant_id, user_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS forge_sessions_active_user ON forge_sessions (user_id, expires_at) WHERE revoked_at IS NULL;
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  tenant_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  csrf_token VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  expires_at DATETIME(3) NOT NULL,
+  revoked_at DATETIME(3),
+  UNIQUE KEY forge_sessions_token_hash_unique (token_hash),
+  KEY forge_sessions_active_user (user_id, revoked_at, expires_at),
+  KEY forge_sessions_user_created (user_id, created_at DESC),
+  CONSTRAINT forge_sessions_membership_fk FOREIGN KEY (tenant_id, user_id)
+    REFERENCES forge_tenant_memberships(tenant_id, user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

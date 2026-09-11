@@ -8,14 +8,14 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 - 新账户必须通过一次性邮件链接验证后才能读取或写入租户资源；支持重新发送验证邮件
 - 忘记密码与一次性重置链接；重置成功后撤销该账户全部旧会话，且接口不泄露邮箱是否注册
 - “设置 → 账户与云端”可查看当前有效会话、退出其他会话或撤销指定会话；不采集设备名称、IP 或硬件信息
-- PostgreSQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
+- MySQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
 - 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，浏览器使用 HttpOnly Cookie 和 CSRF 令牌
 - 邮件验证和密码重置令牌只保存 SHA-256 摘要、限时且只能消费一次；生产环境通过 Resend 发送
-- 数据库迁移使用 advisory lock 和迁移台账；Cloud API 提供 Node 24 非 root 容器、数据库健康检查及生产部署清单
+- 数据库迁移使用 MySQL 命名锁和迁移台账；Cloud API 提供 Node 24 非 root 容器、数据库健康检查及生产部署清单
 - 可选 Cloud 登录界面及工作台账户入口；未设置 Cloud API URL 时保持原有单机行为
 - Electron 主进程使用 HttpOnly 会话向 Cloud API 复核用户和租户，渲染器不能指定租户 ID；验证后 Daemon 才切换租户资料
 - 项目、任务、Skill、MCP 配置和 MCP 加密令牌按租户物理分目录；退出 Cloud 账户后切回原有本机资料
-- PostgreSQL 租户资源登记表、服务端身份派生 API 与强制 Row-Level Security；只允许项目、任务、Skill、MCP 的非敏感元数据
+- MySQL 租户资源登记表和服务端身份派生 API；每次资源操作同时校验活动成员并使用显式租户条件，只允许项目、任务、Skill、MCP 的非敏感元数据
 - “设置 → 账户与云端”可主动把免登录任务复制到当前租户；原资料不会删除，同一来源任务不会重复导入，模型会话和等待队列不会迁移
 - 任务名称、置顶、归档状态和更新时间可手动同步到 Cloud；本机同步回执用于区分单边变化，双边变化必须由用户选择版本
 - 云端独有目录不会伪装成可继续执行的空任务；代码、工作区路径、完整对话、终端输出和密钥始终不进入任务目录 API
@@ -51,7 +51,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.15.0.exe
+release/Forge-Setup-0.16.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -90,15 +90,14 @@ pnpm dev:desktop
 
 ### 运行多用户纵向切片
 
-Cloud API 只连接 PostgreSQL，不会自动降级到 SQLite 或普通 JSON 文件。开发数据库使用仓库中的 Compose 配置：
+Cloud API 只连接 MySQL 8.4，不会自动降级到 SQLite 或普通 JSON 文件。开发数据库使用仓库中的 Compose 配置：
 
 ```powershell
-docker compose up -d postgres
-docker compose run --rm postgres-role
+docker compose up -d mysql
 pnpm dev:cloud
 ```
 
-浏览器打开 `http://127.0.0.1:5173/?cloud=1`。`postgres-role` 会为新旧开发卷幂等配置非超级应用角色；Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接 `DATABASE_URL` 中的 `NOSUPERUSER NOBYPASSRLS` 角色。部署时应使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
+浏览器打开 `http://127.0.0.1:5173/?cloud=1`。Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接没有 DDL 权限的 `forge_app` 账号。MySQL 没有 PostgreSQL 原生 Row-Level Security，租户隔离由服务端会话、活动成员校验和所有资源 SQL 的显式 `tenant_id` 条件共同保证。部署时必须使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
 开发环境未配置 Resend 时，Cloud API 会把验证与重置链接输出到本机终端，便于完成端到端测试；生产环境缺少 Resend 配置会拒绝启动。容器部署、环境变量与上线验收步骤见 [Cloud 部署文档](docs/cloud-deployment.md)。
 
@@ -118,7 +117,7 @@ pnpm dist:win
 
 ```powershell
 pnpm test
-pnpm test:postgres
+pnpm test:mysql
 pnpm typecheck
 pnpm build
 node scripts/smoke-packaged-daemon.mjs

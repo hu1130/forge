@@ -1,32 +1,21 @@
 services:
-  postgres:
-    image: postgres:18-alpine
+  mysql:
+    image: mysql:8.4
     environment:
-      POSTGRES_DB: forge
-      POSTGRES_USER: forge
-      POSTGRES_PASSWORD: forge_dev_only
+      MYSQL_DATABASE: forge
+      MYSQL_USER: forge_migrator
+      MYSQL_PASSWORD: forge_dev_only
+      MYSQL_ROOT_PASSWORD: forge_root_dev_only
     ports:
-      - "127.0.0.1:54329:5432"
+      - "127.0.0.1:33069:3306"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 3s
       timeout: 3s
-      retries: 20
+      retries: 30
     volumes:
-      - forge-postgres-data:/var/lib/postgresql
-      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
-
-  postgres-role:
-    image: postgres:18-alpine
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGPASSWORD: forge_dev_only
-    volumes:
-      - ./infra/postgres/init:/bootstrap:ro
-    command: ["psql", "-h", "postgres", "-U", "forge", "-d", "forge", "-f", "/bootstrap/001_app_role.sql"]
-    restart: "no"
+      - forge-mysql-data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
 
 volumes:
-  forge-postgres-data:
+  forge-mysql-data:

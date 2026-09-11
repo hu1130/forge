@@ -22,6 +22,18 @@ test("production deployment configuration accepts only separated MySQL credentia
   assert.equal(config.databasePoolSize, 10);
   assert.deepEqual(config.allowedOrigins, ["https://forge.example.com"]);
 
+  const desktopConfig = loadCloudDeploymentConfig({
+    ...productionEnvironment(),
+    FORGE_CLOUD_ORIGINS: "https://forge.example.com,http://127.0.0.1:4782",
+    FORGE_CLOUD_COOKIE_SAMESITE: "none",
+  });
+  assert.deepEqual(desktopConfig.allowedOrigins, ["https://forge.example.com", "http://127.0.0.1:4782"]);
+  assert.equal(desktopConfig.cookieSameSite, "none");
+  assert.throws(() => loadCloudDeploymentConfig({
+    ...productionEnvironment(),
+    FORGE_CLOUD_ORIGINS: "https://forge.example.com,http://127.0.0.1:4782",
+  }), /COOKIE_SAMESITE=none/);
+
   assert.throws(() => loadCloudDeploymentConfig({
     ...productionEnvironment(),
     DATABASE_URL: "postgresql://forge_app:runtime-secret@example.internal/forge",
@@ -33,7 +45,7 @@ test("production deployment configuration accepts only separated MySQL credentia
   assert.throws(() => loadCloudDeploymentConfig({
     ...productionEnvironment(),
     FORGE_CLOUD_ORIGINS: "http://forge.example.com",
-  }), /https/);
+  }), /https/i);
   assert.throws(() => loadCloudDeploymentConfig({
     ...productionEnvironment(),
     FORGE_CLOUD_PUBLIC_WEB_URL: "https://account.example.com/?cloud=1",

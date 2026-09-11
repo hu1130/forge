@@ -1,15 +1,15 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.17 在 MySQL Cloud API 基础上补齐生产配置预检、日志脱敏、存活/就绪探针和数据库备份恢复工具，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.18 将登录设备管理限定在当前租户，并补强生产 Cookie、请求来源校验和 API 安全响应头，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
 - Forge Cloud 注册、登录、会话恢复、退出和当前账户接口；注册时原子创建用户、个人租户与 owner 成员关系
 - 新账户必须通过一次性邮件链接验证后才能读取或写入租户资源；支持重新发送验证邮件
 - 忘记密码与一次性重置链接；重置成功后撤销该账户全部旧会话，且接口不泄露邮箱是否注册
-- “设置 → 账户与云端”可查看当前有效会话、退出其他会话或撤销指定会话；不采集设备名称、IP 或硬件信息
+- “设置 → 账户与云端”可查看当前租户的有效会话、退出同租户其他会话或撤销指定会话；不采集设备名称、IP 或硬件信息
 - MySQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
-- 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，浏览器使用 HttpOnly Cookie 和 CSRF 令牌
+- 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，生产浏览器使用 `__Host-` HttpOnly Cookie、可信 Origin 和 CSRF 三重约束
 - 邮件验证和密码重置令牌只保存 SHA-256 摘要、限时且只能消费一次；生产环境通过 Resend 发送
 - 数据库迁移使用 MySQL 命名锁和迁移台账；Cloud API 提供 Node 24 非 root 容器、数据库健康检查及生产部署清单
 - 可选 Cloud 登录界面及工作台账户入口；未设置 Cloud API URL 时保持原有单机行为
@@ -51,7 +51,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.17.0.exe
+release/Forge-Setup-0.18.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。

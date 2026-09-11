@@ -293,28 +293,28 @@ export class MySqlAuthStore implements AuthStore, TenantResourceStore {
     return rows[0].user_id;
   }
 
-  async listSessions(userId: string): Promise<StoredSessionSummary[]> {
+  async listSessions(userId: string, tenantId: string): Promise<StoredSessionSummary[]> {
     const [rows] = await this.pool.execute<(RowDataPacket & { id: string; created_at: Date; expires_at: Date })[]>(`
       SELECT id, created_at, expires_at
         FROM forge_sessions
-       WHERE user_id = ? AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(3)
+       WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(3)
        ORDER BY created_at DESC
-    `, [userId]);
+    `, [userId, tenantId]);
     return rows.map((row) => ({ id: row.id, createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString() }));
   }
 
-  async revokeUserSession(userId: string, sessionId: string) {
+  async revokeUserSession(userId: string, tenantId: string, sessionId: string) {
     const [result] = await this.pool.execute<ResultSetHeader>(
-      "UPDATE forge_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
-      [sessionId, userId],
+      "UPDATE forge_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ? AND tenant_id = ? AND revoked_at IS NULL",
+      [sessionId, userId, tenantId],
     );
     return result.affectedRows > 0;
   }
 
-  async revokeOtherSessions(userId: string, currentSessionId: string) {
+  async revokeOtherSessions(userId: string, tenantId: string, currentSessionId: string) {
     const [result] = await this.pool.execute<ResultSetHeader>(
-      "UPDATE forge_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND id <> ? AND revoked_at IS NULL",
-      [userId, currentSessionId],
+      "UPDATE forge_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND tenant_id = ? AND id <> ? AND revoked_at IS NULL",
+      [userId, tenantId, currentSessionId],
     );
     return result.affectedRows;
   }

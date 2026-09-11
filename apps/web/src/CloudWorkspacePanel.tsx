@@ -512,7 +512,7 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
     <section className="cloud-session-card" aria-labelledby="cloud-session-title">
       <div className="cloud-session-heading">
         <span><MonitorSmartphone size={17} /></span>
-        <div><h4 id="cloud-session-title">登录设备</h4><p>只显示账户会话时间，不采集设备名称、IP 或硬件信息。</p></div>
+        <div><h4 id="cloud-session-title">当前工作区的登录设备</h4><p>会话按租户隔离；只显示时间，不采集设备名称、IP 或硬件信息。</p></div>
         <button type="button" disabled={Boolean(sessionBusy) || sessions.every((session) => session.current)} onClick={() => void revokeOtherSessions()}>{sessionBusy === "others" && <LoaderCircle className="spin" size={13} />}退出其他设备</button>
       </div>
       <div className="cloud-session-list">

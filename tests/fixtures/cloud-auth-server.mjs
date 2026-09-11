@@ -20,18 +20,21 @@ class QaAuthStore {
       emailVerifiedAt: input.emailVerifiedAt,
     });
     this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
-    this.memberships.set(input.userId, { tenantId: input.tenantId, role: "owner" });
+    this.memberships.set(input.userId, { tenantId: input.tenantId, role: "owner", status: "active" });
   }
 
   async findUserByEmail(email) { return [...this.users.values()].find((user) => user.email === email); }
   async findUserById(userId) { return this.users.get(userId); }
-  async findDefaultTenant(userId) { return this.memberships.has(userId) ? { id: this.memberships.get(userId).tenantId } : undefined; }
+  async findDefaultTenant(userId) {
+    const membership = this.memberships.get(userId);
+    return membership?.status === "active" ? { id: membership.tenantId } : undefined;
+  }
 
   async createSession(input) {
     const user = this.users.get(input.userId);
     const tenant = this.tenants.get(input.tenantId);
     const membership = this.memberships.get(input.userId);
-    assert.ok(user && tenant && membership?.tenantId === tenant.id);
+    assert.ok(user && tenant && membership?.tenantId === tenant.id && membership.status === "active");
     const session = {
       id: input.id,
       tokenHash: input.tokenHash,
@@ -46,25 +49,28 @@ class QaAuthStore {
     return session;
   }
 
-  async findSession(hash) { return this.sessions.get(hash); }
+  async findSession(hash) {
+    const session = this.sessions.get(hash);
+    return session && this.memberships.get(session.user.id)?.status === "active" ? session : undefined;
+  }
   async revokeSession(hash) { this.sessions.delete(hash); }
   async createActionToken(input) { this.actionTokens.set(input.tokenHash, input); }
   async verifyEmailWithToken() { return undefined; }
   async resetPasswordWithToken() { return false; }
-  async listSessions(userId) {
-    return [...this.sessions.values()].filter((session) => session.user.id === userId)
+  async listSessions(userId, tenantId) {
+    return [...this.sessions.values()].filter((session) => session.user.id === userId && session.tenant.id === tenantId)
       .map(({ id, createdAt, expiresAt }) => ({ id, createdAt, expiresAt }));
   }
-  async revokeUserSession(userId, sessionId) {
-    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.id === sessionId);
+  async revokeUserSession(userId, tenantId, sessionId) {
+    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.tenant.id === tenantId && session.id === sessionId);
     if (!entry) return false;
     this.sessions.delete(entry[0]);
     return true;
   }
-  async revokeOtherSessions(userId, currentSessionId) {
+  async revokeOtherSessions(userId, tenantId, currentSessionId) {
     let revoked = 0;
     for (const [hash, session] of this.sessions) {
-      if (session.user.id === userId && session.id !== currentSessionId) {
+      if (session.user.id === userId && session.tenant.id === tenantId && session.id !== currentSessionId) {
         this.sessions.delete(hash);
         revoked += 1;
       }

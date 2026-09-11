@@ -23,7 +23,7 @@ class MemoryAuthStore {
       emailVerifiedAt: input.emailVerifiedAt,
     });
     this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
-    this.memberships.set(`${input.tenantId}:${input.userId}`, { tenantId: input.tenantId, userId: input.userId, role: "owner" });
+    this.memberships.set(`${input.tenantId}:${input.userId}`, { tenantId: input.tenantId, userId: input.userId, role: "owner", status: "active" });
   }
 
   async findUserByEmail(email) {
@@ -35,7 +35,7 @@ class MemoryAuthStore {
   }
 
   async findDefaultTenant(userId) {
-    const membership = [...this.memberships.values()].find((item) => item.userId === userId);
+    const membership = [...this.memberships.values()].find((item) => item.userId === userId && item.status === "active");
     return membership ? { id: membership.tenantId } : undefined;
   }
 
@@ -43,7 +43,7 @@ class MemoryAuthStore {
     const user = this.users.get(input.userId);
     const tenant = this.tenants.get(input.tenantId);
     const membership = this.memberships.get(`${input.tenantId}:${input.userId}`);
-    assert.ok(user && tenant && membership);
+    assert.ok(user && tenant && membership?.status === "active");
     const stored = {
       id: input.id,
       tokenHash: input.tokenHash,
@@ -59,7 +59,9 @@ class MemoryAuthStore {
   }
 
   async findSession(tokenHash) {
-    return this.sessions.get(tokenHash);
+    const session = this.sessions.get(tokenHash);
+    if (!session) return undefined;
+    return this.memberships.get(`${session.tenant.id}:${session.user.id}`)?.status === "active" ? session : undefined;
   }
 
   async revokeSession(tokenHash) {
@@ -101,22 +103,22 @@ class MemoryAuthStore {
     return true;
   }
 
-  async listSessions(userId) {
-    return [...this.sessions.values()].filter((session) => session.user.id === userId)
+  async listSessions(userId, tenantId) {
+    return [...this.sessions.values()].filter((session) => session.user.id === userId && session.tenant.id === tenantId)
       .map(({ id, createdAt, expiresAt }) => ({ id, createdAt, expiresAt }));
   }
 
-  async revokeUserSession(userId, sessionId) {
-    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.id === sessionId);
+  async revokeUserSession(userId, tenantId, sessionId) {
+    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.tenant.id === tenantId && session.id === sessionId);
     if (!entry) return false;
     this.sessions.delete(entry[0]);
     return true;
   }
 
-  async revokeOtherSessions(userId, currentSessionId) {
+  async revokeOtherSessions(userId, tenantId, currentSessionId) {
     let revoked = 0;
     for (const [hash, session] of this.sessions) {
-      if (session.user.id === userId && session.id !== currentSessionId) {
+      if (session.user.id === userId && session.tenant.id === tenantId && session.id !== currentSessionId) {
         this.sessions.delete(hash);
         revoked += 1;
       }
@@ -275,8 +277,17 @@ test("email verification, password recovery, and session revocation form a compl
     publicWebUrl: `${origin}/?cloud=1`,
     allowedOrigins: [origin],
     cookieSecure: true,
+    requireOriginForUnsafeRequests: true,
   });
   try {
+    const missingOrigin = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: { email: "secure@example.com", password: "correct horse battery staple" },
+    });
+    assert.equal(missingOrigin.statusCode, 403);
+    assert.deepEqual(missingOrigin.json(), { message: "请求缺少可信来源" });
+
     const registered = await app.inject({
       method: "POST",
       url: "/v1/auth/register",
@@ -288,6 +299,11 @@ test("email verification, password recovery, and session revocation form a compl
     assert.equal(registered.json().verificationDelivery, "sent");
     assert.equal(delivery.verification.length, 1);
     const unverifiedCookie = sessionCookie(registered);
+    assert.match(unverifiedCookie, /^__Host-forge_cloud_session=/);
+    assert.match(registered.headers["set-cookie"], /; Secure;/i);
+    assert.doesNotMatch(registered.headers["set-cookie"], /Domain=/i);
+    assert.equal(registered.headers["x-frame-options"], "DENY");
+    assert.equal(registered.headers["content-security-policy"], "default-src 'none'; frame-ancestors 'none'");
     const blockedResource = await app.inject({ method: "GET", url: "/v1/tenant/resources", headers: { cookie: unverifiedCookie } });
     assert.equal(blockedResource.statusCode, 403);
 
@@ -328,11 +344,11 @@ test("email verification, password recovery, and session revocation form a compl
     });
     assert.equal(reset.statusCode, 204);
     assert.deepEqual((await app.inject({ method: "GET", url: "/v1/auth/session", headers: { cookie: verifiedCookie } })).json(), { authenticated: false });
-    assert.equal((await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "correct horse battery staple" } })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url: "/v1/auth/login", headers: { origin }, payload: { email: "secure@example.com", password: "correct horse battery staple" } })).statusCode, 401);
     assert.equal((await app.inject({ method: "POST", url: "/v1/auth/password/reset", headers: { origin }, payload: { token: resetToken, password: "another secure passphrase" } })).statusCode, 400);
 
-    const firstLogin = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
-    const secondLogin = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
+    const firstLogin = await app.inject({ method: "POST", url: "/v1/auth/login", headers: { origin }, payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
+    const secondLogin = await app.inject({ method: "POST", url: "/v1/auth/login", headers: { origin }, payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
     assert.equal(firstLogin.statusCode, 200);
     assert.equal(secondLogin.statusCode, 200);
     const secondCookie = sessionCookie(secondLogin);
@@ -385,11 +401,14 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   assert.match(accountSecurityMigration, /purpose ENUM\('verify_email', 'reset_password'\)/);
   assert.match(mysqlStore, /WHERE tenant_id = \? AND user_id = \?/);
   assert.match(mysqlStore, /WHERE tenant_id = \? AND kind = \?/);
+  assert.match(mysqlStore, /WHERE user_id = \? AND tenant_id = \?/);
   assert.match(mysqlStore, /GET_LOCK/);
   assert.match(mysqlStore, /forge_schema_migrations/);
   assert.match(deploymentConfig, /FORGE_CLOUD_MIGRATION_DATABASE_URL/);
   assert.match(deploymentConfig, /FORGE_CLOUD_RESEND_API_KEY/);
   assert.match(cloudServer, /req\.headers\.cookie/);
+  assert.match(cloudServer, /requireOriginForUnsafeRequests: config\.production/);
+  assert.match(cloudApp, /__Host-forge_cloud_session/);
   assert.match(emailDelivery, /https:\/\/api\.resend\.com\/emails/);
   assert.match(cloudDockerfile, /USER node/);
   assert.match(cloudDockerfile, /\/v1\/live/);

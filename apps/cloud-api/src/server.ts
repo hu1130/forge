@@ -24,9 +24,10 @@ const app = await createCloudApi({
   emailDelivery,
   publicWebUrl: config.publicWebUrl,
   trustProxy: config.trustProxy,
+  requireOriginForUnsafeRequests: config.production,
   logger: config.production ? {
     level: config.logLevel,
-    base: { service: "forge-cloud-api", version: "0.17.0" },
+    base: { service: "forge-cloud-api", version: "0.18.0" },
     redact: { paths: ["req.headers.cookie", "req.headers.authorization", "res.headers['set-cookie']"], censor: "[REDACTED]" },
   } : false,
 });

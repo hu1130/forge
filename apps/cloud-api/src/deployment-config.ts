@@ -37,8 +37,19 @@ function mysqlConnection(name: string, value: string) {
 }
 
 function exactOrigin(name: string, value: string, production: boolean) {
-  const protocol = production || value.startsWith("https:") ? "https:" : "http:";
-  const parsed = requiredUrl(name, value, protocol);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} 不是有效 URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} 必须使用 http 或 https 协议`);
+  }
+  const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]";
+  if (production && parsed.protocol !== "https:" && !loopback) {
+    throw new Error(`${name} 的公网来源必须使用 HTTPS；桌面端只允许显式配置回环来源`);
+  }
   if (parsed.username || parsed.password || parsed.origin !== value) throw new Error(`${name} 必须是没有路径、查询或凭据的来源地址`);
   return parsed.origin;
 }
@@ -102,6 +113,9 @@ export function loadCloudDeploymentConfig(environment: NodeJS.ProcessEnv = proce
     }
     if (!resendApiKey || !emailFrom) throw new Error("生产环境需要 FORGE_CLOUD_RESEND_API_KEY 和 FORGE_CLOUD_EMAIL_FROM");
     if (!trustProxy) throw new Error("生产环境必须在可信 HTTPS 反向代理后设置 FORGE_CLOUD_TRUST_PROXY=1");
+    if (allowedOrigins.some((origin) => origin.startsWith("http:")) && cookieSameSite !== "none") {
+      throw new Error("桌面回环来源需要 FORGE_CLOUD_COOKIE_SAMESITE=none");
+    }
   }
 
   return {

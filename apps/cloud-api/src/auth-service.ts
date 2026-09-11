@@ -41,9 +41,9 @@ export interface AuthStore {
   createActionToken(input: { id: string; userId: string; purpose: AuthActionPurpose; tokenHash: string; expiresAt: string }): Promise<void>;
   verifyEmailWithToken(tokenHash: string): Promise<StoredUser | undefined>;
   resetPasswordWithToken(tokenHash: string, passwordHash: string): Promise<boolean>;
-  listSessions(userId: string): Promise<StoredSessionSummary[]>;
-  revokeUserSession(userId: string, sessionId: string): Promise<boolean>;
-  revokeOtherSessions(userId: string, currentSessionId: string): Promise<number>;
+  listSessions(userId: string, tenantId: string): Promise<StoredSessionSummary[]>;
+  revokeUserSession(userId: string, tenantId: string, sessionId: string): Promise<boolean>;
+  revokeOtherSessions(userId: string, tenantId: string, currentSessionId: string): Promise<number>;
   health?(): Promise<void>;
   close?(): Promise<void>;
 }
@@ -202,16 +202,16 @@ export class AuthService {
     return this.store.resetPasswordWithToken(tokenHash(token), await hashPassword(password));
   }
 
-  async listSessions(userId: string, currentSessionId: string) {
-    const sessions = await this.store.listSessions(userId);
+  async listSessions(userId: string, tenantId: string, currentSessionId: string) {
+    const sessions = await this.store.listSessions(userId, tenantId);
     return sessions.map((session) => ({ ...session, current: session.id === currentSessionId }));
   }
 
-  async revokeUserSession(userId: string, sessionId: string) {
-    return this.store.revokeUserSession(userId, sessionId);
+  async revokeUserSession(userId: string, tenantId: string, sessionId: string) {
+    return this.store.revokeUserSession(userId, tenantId, sessionId);
   }
 
-  async revokeOtherSessions(userId: string, currentSessionId: string) {
-    return this.store.revokeOtherSessions(userId, currentSessionId);
+  async revokeOtherSessions(userId: string, tenantId: string, currentSessionId: string) {
+    return this.store.revokeOtherSessions(userId, tenantId, currentSessionId);
   }
 }

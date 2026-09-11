@@ -10,6 +10,7 @@ const store = new MySqlAuthStore(appPool);
 
 const accountA = { userId: randomUUID(), tenantId: randomUUID(), email: `mysql-a-${randomUUID()}@example.test` };
 const accountB = { userId: randomUUID(), tenantId: randomUUID(), email: `mysql-b-${randomUUID()}@example.test` };
+const secondaryTenantId = randomUUID();
 
 async function createAccount(account, label, emailVerifiedAt) {
   await store.createAccount({
@@ -29,6 +30,14 @@ try {
   assert.deepEqual(appliedMigrations.map((row) => row.name), ["001_identity.sql", "002_tenant_resources.sql", "003_account_security.sql"]);
   await createAccount(accountA, "MYSQLA", new Date().toISOString());
   await createAccount(accountB, "MYSQLB");
+  await adminPool.execute(
+    "INSERT INTO forge_tenants (id, name, slug, kind) VALUES (?, 'MYSQLA Team', ?, 'team')",
+    [secondaryTenantId, `mysql-a-team-${secondaryTenantId.slice(0, 8)}`],
+  );
+  await adminPool.execute(
+    "INSERT INTO forge_tenant_memberships (tenant_id, user_id, role) VALUES (?, ?, 'member')",
+    [secondaryTenantId, accountA.userId],
+  );
   const principalA = { tenantId: accountA.tenantId, userId: accountA.userId };
   const principalB = { tenantId: accountB.tenantId, userId: accountB.userId };
 
@@ -43,6 +52,7 @@ try {
   const firstSessionId = randomUUID();
   const secondSessionId = randomUUID();
   const foreignSessionId = randomUUID();
+  const secondaryTenantSessionId = randomUUID();
   const sessionInput = (id, userId, tenantId, tokenHash) => ({
     id, userId, tenantId, tokenHash, csrfToken: randomUUID(),
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -50,10 +60,13 @@ try {
   await store.createSession(sessionInput(firstSessionId, accountA.userId, accountA.tenantId, "b".repeat(64)));
   await store.createSession(sessionInput(secondSessionId, accountA.userId, accountA.tenantId, "c".repeat(64)));
   await store.createSession(sessionInput(foreignSessionId, accountB.userId, accountB.tenantId, "d".repeat(64)));
-  assert.deepEqual(new Set((await store.listSessions(accountA.userId)).map((session) => session.id)), new Set([firstSessionId, secondSessionId]));
-  assert.equal(await store.revokeUserSession(accountA.userId, foreignSessionId), false);
-  assert.equal(await store.revokeOtherSessions(accountA.userId, firstSessionId), 1);
-  assert.deepEqual((await store.listSessions(accountA.userId)).map((session) => session.id), [firstSessionId]);
+  await store.createSession(sessionInput(secondaryTenantSessionId, accountA.userId, secondaryTenantId, "f".repeat(64)));
+  assert.deepEqual(new Set((await store.listSessions(accountA.userId, accountA.tenantId)).map((session) => session.id)), new Set([firstSessionId, secondSessionId]));
+  assert.equal(await store.revokeUserSession(accountA.userId, accountA.tenantId, secondaryTenantSessionId), false);
+  assert.equal(await store.revokeUserSession(accountA.userId, accountA.tenantId, foreignSessionId), false);
+  assert.equal(await store.revokeOtherSessions(accountA.userId, accountA.tenantId, firstSessionId), 1);
+  assert.deepEqual((await store.listSessions(accountA.userId, accountA.tenantId)).map((session) => session.id), [firstSessionId]);
+  assert.ok(await store.findSession("f".repeat(64)));
 
   const resetHash = "e".repeat(64);
   await store.createActionToken({
@@ -62,7 +75,8 @@ try {
   });
   assert.equal(await store.resetPasswordWithToken(resetHash, "replacement-test-hash"), true);
   assert.equal((await store.findUserById(accountA.userId)).passwordHash, "replacement-test-hash");
-  assert.deepEqual(await store.listSessions(accountA.userId), []);
+  assert.deepEqual(await store.listSessions(accountA.userId, accountA.tenantId), []);
+  assert.equal(await store.findSession("f".repeat(64)), undefined);
   assert.equal(await store.resetPasswordWithToken(resetHash, "replayed-hash"), false);
 
   await store.upsertResource(principalA, { kind: "task", key: "shared-key", payload: { title: "tenant A" }, expectedVersion: 0 });
@@ -74,13 +88,20 @@ try {
     /无权访问该租户/,
   );
 
+  await adminPool.execute(
+    "UPDATE forge_tenant_memberships SET status = 'suspended' WHERE tenant_id = ? AND user_id = ?",
+    [accountB.tenantId, accountB.userId],
+  );
+  assert.equal(await store.findSession("d".repeat(64)), undefined);
+  await assert.rejects(store.listResources(principalB, "task"), /无权访问该租户/);
+
   await assert.rejects(
     appPool.query("ALTER TABLE forge_tenant_resources ADD COLUMN forbidden_change INT NULL"),
     /ALTER command denied|access denied/i,
   );
   console.log("MySQL tenant isolation: ready");
 } finally {
-  await adminPool.execute("DELETE FROM forge_tenants WHERE id IN (?, ?)", [accountA.tenantId, accountB.tenantId]).catch(() => undefined);
+  await adminPool.execute("DELETE FROM forge_tenants WHERE id IN (?, ?, ?)", [accountA.tenantId, accountB.tenantId, secondaryTenantId]).catch(() => undefined);
   await adminPool.execute("DELETE FROM forge_users WHERE id IN (?, ?)", [accountA.userId, accountB.userId]).catch(() => undefined);
   await appPool.end();
   await adminPool.end();

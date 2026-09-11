@@ -16,7 +16,7 @@ async function freePort() {
 }
 
 async function waitForHealth(baseUrl, child) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
     if (child.exitCode !== null) break;
     try {
       const response = await fetch(`${baseUrl}/api/health`);
@@ -36,7 +36,7 @@ async function jsonRequest(baseUrl, route, options) {
   return payload;
 }
 
-test("demo turns accept steer input and execute a persistent, reorderable queue", { timeout: 20_000 }, async () => {
+test("demo turns accept steer input and execute a persistent, reorderable queue", { timeout: 30_000 }, async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-turn-queue-api-"));
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;

@@ -149,12 +149,21 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .cloud-auth-card input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(49, 92, 244, .12); }
 .field-hint { margin-top: -8px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.55; }
 .cloud-auth-error { min-height: 38px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 7px; padding: 8px 10px; color: #9d2733; background: var(--red-soft); border: 1px solid #efc8cd; border-radius: 7px; font-size: 11px; line-height: 1.45; }
+.cloud-auth-notice { min-height: 38px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 7px; padding: 8px 10px; color: #265d45; background: #edf8f2; border: 1px solid #bddfcd; border-radius: 7px; font-size: 11px; line-height: 1.45; }
 .cloud-auth-submit { height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; color: white; background: var(--blue); border: 0; border-radius: 8px; cursor: pointer; font-weight: 680; }
 .cloud-auth-submit:hover { background: var(--blue-hover); }
 .cloud-auth-submit:disabled { opacity: .55; cursor: default; }
+.cloud-auth-secondary { width: 100%; height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; color: #343840; background: white; border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; font-weight: 650; }
+.cloud-auth-secondary:hover:not(:disabled) { color: var(--blue); border-color: #9aacef; background: #f7f8ff; }
+.cloud-auth-secondary:disabled { opacity: .55; cursor: default; }
 .cloud-auth-switch { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 22px; color: var(--muted); font-size: 11px; }
 .cloud-auth-switch button { min-height: 28px; padding: 0 5px; color: var(--blue); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-weight: 650; }
 .cloud-auth-switch button:hover { text-decoration: underline; }
+.cloud-auth-submit:focus-visible, .cloud-auth-secondary:focus-visible, .cloud-auth-switch button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.cloud-auth-switch-multiple { gap: 9px; }
+.cloud-auth-verification > svg { margin: 18px 0 2px; color: var(--blue); }
+.cloud-auth-verification .cloud-auth-submit { width: 100%; margin-top: 16px; }
+.cloud-auth-verification .cloud-auth-error, .cloud-auth-verification .cloud-auth-notice { margin-top: 16px; }
 
 @media (max-width: 820px) {
   .cloud-auth-shell { grid-template-columns: 1fr; }
@@ -611,6 +620,24 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .cloud-action-grid > .cloud-extension-action { grid-column: 1 / -1; }
 .cloud-action-grid button:hover, .sync-conflicts button:hover { background: var(--surface); }
 .cloud-action-grid button:disabled, .sync-conflicts button:disabled { opacity: .5; cursor: default; }
+.cloud-session-card { display: grid; gap: 10px; padding: 13px 14px; background: #fafbfc; border: 1px solid var(--line); border-radius: 9px; }
+.cloud-session-heading { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: center; }
+.cloud-session-heading > span { width: 28px; height: 28px; display: grid; place-items: center; color: var(--blue); background: var(--blue-soft); border-radius: 7px; }
+.cloud-session-heading h4, .cloud-session-heading p { margin: 0; }
+.cloud-session-heading h4 { font-size: 12px; }
+.cloud-session-heading p { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.cloud-session-heading button, .cloud-session-list button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; color: #454952; background: white; border: 1px solid var(--line-strong); border-radius: 7px; cursor: pointer; font-size: 10px; }
+.cloud-session-heading button:disabled, .cloud-session-list button:disabled { opacity: .5; cursor: default; }
+.cloud-session-heading button:focus-visible, .cloud-session-list button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.cloud-session-list { display: grid; border-top: 1px solid var(--line); }
+.cloud-session-list article { min-width: 0; display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.cloud-session-list article:last-child { padding-bottom: 0; border-bottom: 0; }
+.cloud-session-list article > span { width: 7px; height: 7px; background: #b5bac3; border-radius: 50%; }
+.cloud-session-list article > span.current { background: #2f9b65; box-shadow: 0 0 0 3px #dff3e8; }
+.cloud-session-list article > div { min-width: 0; display: grid; gap: 3px; }
+.cloud-session-list strong { font-size: 10px; }
+.cloud-session-list small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-session-list em { color: #2b7651; font-style: normal; font-size: 9px; }
 .cloud-sync-warning { display: flex; align-items: flex-start; gap: 7px; padding: 9px 10px; color: #76521b; background: var(--warning-soft); border: 1px solid #ead19f; border-radius: 7px; font-size: 10px; line-height: 1.5; }
 .cloud-sync-warning svg { flex: none; margin-top: 1px; }
 .sync-conflicts { display: grid; gap: 8px; padding-top: 4px; }
@@ -899,6 +926,10 @@ body { background: var(--canvas); font-size: 13px; }
   .cloud-action-grid > .cloud-extension-action { grid-column: auto; }
   .cloud-identity-card { grid-template-columns: 40px minmax(0, 1fr); }
   .cloud-identity-card em { grid-column: 2; }
+  .cloud-session-heading { grid-template-columns: 30px minmax(0, 1fr); }
+  .cloud-session-heading > button { grid-column: 2; justify-self: start; }
+  .cloud-session-heading { grid-template-columns: 30px minmax(0, 1fr); }
+  .cloud-session-heading > button { grid-column: 2; justify-self: start; }
   .sync-conflicts article { grid-template-columns: 26px minmax(0, 1fr); }
   .sync-conflicts article > div:last-child { grid-column: 2; }
 }

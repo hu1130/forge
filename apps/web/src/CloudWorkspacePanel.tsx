@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Check, Cloud, Download, LoaderCircle, PlugZap, RefreshCw, ShieldCheck, UploadCloud } from "lucide-react";
+import { AlertTriangle, Check, Cloud, Download, LoaderCircle, MonitorSmartphone, PlugZap, RefreshCw, ShieldCheck, UploadCloud } from "lucide-react";
 import type {
-  CloudMcpCatalogMetadata, CloudSkillCatalogMetadata, CloudTaskMetadata, CloudTenantResource,
+  CloudMcpCatalogMetadata, CloudSessionInfo, CloudSessionListPayload, CloudSkillCatalogMetadata, CloudTaskMetadata, CloudTenantResource,
   CloudTenantResourcesPayload, ExtensionCatalogEntry, ExtensionCatalogMetadata, ExtensionSyncSnapshot,
   ForgeTask, LocalProfileImportResult, LocalProfileSummary, TaskSyncSnapshot,
 } from "@forge/contracts";
 
 interface AuthenticatedSession {
-  user: { id: string; email: string; displayName: string };
+  sessionId: string;
+  user: { id: string; email: string; displayName: string; emailVerified: boolean };
   tenant: { id: string; name: string; slug: string; role: "owner" | "admin" | "member" };
   csrfToken: string;
 }
@@ -107,6 +108,10 @@ function extensionReceiptKey(entry: Pick<ExtensionCatalogEntry, "kind" | "key">)
   return `${entry.kind}:${entry.key}`;
 }
 
+function sessionTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
 export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
   const [localProfile, setLocalProfile] = useState<LocalProfileSummary | null>(null);
   const [cloudTaskCount, setCloudTaskCount] = useState(0);
@@ -116,6 +121,8 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
   const [cloudOnlyExtensionCount, setCloudOnlyExtensionCount] = useState(0);
   const [excludedExtensions, setExcludedExtensions] = useState<ExtensionSyncSnapshot["excluded"]>({ customSkills: 0, customMcpServers: 0 });
   const [extensionConflicts, setExtensionConflicts] = useState<ExtensionConflict[]>([]);
+  const [sessions, setSessions] = useState<CloudSessionInfo[]>([]);
+  const [sessionBusy, setSessionBusy] = useState("");
   const [busy, setBusy] = useState<"loading" | "import" | "sync" | string>("loading");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -126,21 +133,24 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
     setBusy("loading");
     setError("");
     try {
-      const [localResponse, cloudResponse, extensionResponse, cloudSkillsResponse, cloudMcpResponse] = await Promise.all([
+      const [localResponse, cloudResponse, extensionResponse, cloudSkillsResponse, cloudMcpResponse, sessionsResponse] = await Promise.all([
         fetch("/api/local-profile/summary"),
         cloudRequest("/v1/tenant/resources?kind=task"),
         fetch("/api/cloud-sync/extensions"),
         cloudRequest("/v1/tenant/resources?kind=skill"),
         cloudRequest("/v1/tenant/resources?kind=mcp"),
+        cloudRequest("/v1/auth/sessions"),
       ]);
       setLocalProfile(await responsePayload<LocalProfileSummary>(localResponse, "无法读取本机资料概况"));
       const cloud = await responsePayload<CloudTenantResourcesPayload>(cloudResponse, "无法读取云端任务目录");
       const extensionSnapshot = await responsePayload<ExtensionSyncSnapshot>(extensionResponse, "无法读取本机扩展目录");
       const cloudSkills = await responsePayload<CloudTenantResourcesPayload>(cloudSkillsResponse, "无法读取云端 Skill 目录");
       const cloudMcp = await responsePayload<CloudTenantResourcesPayload>(cloudMcpResponse, "无法读取云端 MCP 目录");
+      const sessionPayload = await responsePayload<CloudSessionListPayload>(sessionsResponse, "无法读取登录设备");
       setCloudTaskCount(cloud.resources.length);
       setExcludedExtensions(extensionSnapshot.excluded);
       setCloudExtensionCount(cloudSkills.resources.length + cloudMcp.resources.length);
+      setSessions(sessionPayload.sessions);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -426,6 +436,46 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
     }
   };
 
+  const revokeSession = async (target: CloudSessionInfo) => {
+    if (target.current || sessionBusy) return;
+    setSessionBusy(target.id); setError(""); setMessage("");
+    try {
+      const response = await cloudRequest(`/v1/auth/sessions/${encodeURIComponent(target.id)}`, {
+        method: "DELETE",
+        headers: { "x-csrf-token": props.session.csrfToken },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { message?: string };
+        throw new Error(payload.message || "无法撤销登录设备");
+      }
+      setSessions((current) => current.filter((session) => session.id !== target.id));
+      setMessage("该设备的 Forge Cloud 会话已经撤销。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSessionBusy("");
+    }
+  };
+
+  const revokeOtherSessions = async () => {
+    if (sessionBusy || sessions.every((session) => session.current)
+      || !window.confirm("退出其他所有设备上的 Forge Cloud 账户吗？当前设备会保持登录。")) return;
+    setSessionBusy("others"); setError(""); setMessage("");
+    try {
+      const response = await cloudRequest("/v1/auth/sessions/revoke-others", {
+        method: "POST",
+        headers: { "x-csrf-token": props.session.csrfToken },
+      });
+      const payload = await responsePayload<{ revoked: number }>(response, "无法退出其他设备");
+      setSessions((current) => current.filter((session) => session.current));
+      setMessage(`已退出 ${payload.revoked} 个其他设备会话。`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSessionBusy("");
+    }
+  };
+
   const disabled = Boolean(busy) || props.anyTaskRunning;
   return <div className="cloud-workspace-panel">
     <div className="settings-heading">
@@ -458,6 +508,21 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
         <button type="button" aria-busy={busy === "extension-sync"} disabled={disabled} onClick={() => void syncExtensionCatalog()}>{busy === "extension-sync" ? <LoaderCircle className="spin" size={14} /> : <PlugZap size={14} />}{busy === "extension-sync" ? "同步中…" : "同步扩展目录"}</button>
       </section>
     </div>
+
+    <section className="cloud-session-card" aria-labelledby="cloud-session-title">
+      <div className="cloud-session-heading">
+        <span><MonitorSmartphone size={17} /></span>
+        <div><h4 id="cloud-session-title">登录设备</h4><p>只显示账户会话时间，不采集设备名称、IP 或硬件信息。</p></div>
+        <button type="button" disabled={Boolean(sessionBusy) || sessions.every((session) => session.current)} onClick={() => void revokeOtherSessions()}>{sessionBusy === "others" && <LoaderCircle className="spin" size={13} />}退出其他设备</button>
+      </div>
+      <div className="cloud-session-list">
+        {sessions.map((loginSession) => <article key={loginSession.id}>
+          <span className={loginSession.current ? "current" : ""} aria-hidden="true" />
+          <div><strong>{loginSession.current ? "当前设备" : "其他登录会话"}</strong><small>登录于 {sessionTime(loginSession.createdAt)} · 到期 {sessionTime(loginSession.expiresAt)}</small></div>
+          {loginSession.current ? <em>正在使用</em> : <button type="button" disabled={Boolean(sessionBusy)} onClick={() => void revokeSession(loginSession)}>{sessionBusy === loginSession.id && <LoaderCircle className="spin" size={13} />}撤销</button>}
+        </article>)}
+      </div>
+    </section>
 
     {props.anyTaskRunning && <div className="cloud-sync-warning"><AlertTriangle size={15} />请先停止正在运行的任务，再导入或同步目录。</div>}
     {(error || message) && <div className={`settings-feedback ${error ? "feedback-error" : "feedback-success"}`} role={error ? "alert" : "status"}>{error || message}</div>}

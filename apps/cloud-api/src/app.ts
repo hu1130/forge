@@ -2,8 +2,9 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply } from "fastify";
-import type { CloudAuthSession } from "@forge/contracts";
+import type { CloudAuthSession, CloudSessionListPayload } from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
+import type { EmailDelivery } from "./email-delivery.js";
 import { TenantAccessError, TenantVersionConflictError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
 
 export interface CloudApiOptions {
@@ -12,11 +13,16 @@ export interface CloudApiOptions {
   allowedOrigins: string[];
   cookieSecure: boolean;
   cookieSameSite?: "lax" | "none";
+  emailDelivery?: EmailDelivery;
+  publicWebUrl?: string;
+  trustProxy?: boolean;
+  logger?: boolean;
 }
 
 const COOKIE_NAME = "forge_cloud_session";
 const COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function bodyRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -26,8 +32,17 @@ export async function createCloudApi(options: CloudApiOptions) {
   if (options.cookieSameSite === "none" && !options.cookieSecure) {
     throw new Error("SameSite=None requires secure cookies");
   }
-  const app = Fastify({ logger: false, bodyLimit: 32 * 1024 });
-  const auth = new AuthService(options.store);
+  let publicWebUrl: URL | undefined;
+  if (options.emailDelivery) {
+    try {
+      publicWebUrl = new URL(options.publicWebUrl || "");
+      if (publicWebUrl.protocol !== "http:" && publicWebUrl.protocol !== "https:") throw new Error();
+    } catch {
+      throw new Error("启用邮件验证时需要有效的 publicWebUrl");
+    }
+  }
+  const app = Fastify({ logger: options.logger || false, bodyLimit: 32 * 1024, trustProxy: options.trustProxy || false });
+  const auth = new AuthService(options.store, Boolean(options.emailDelivery));
   await app.register(cookie);
   await app.register(cors, { origin: options.allowedOrigins, credentials: true });
   await app.register(rateLimit, { global: false });
@@ -36,6 +51,7 @@ export async function createCloudApi(options: CloudApiOptions) {
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "no-referrer");
     reply.header("cache-control", "no-store");
+    if (options.cookieSecure) reply.header("strict-transport-security", "max-age=31536000; includeSubDomains");
     if (!unsafeMethods.has(request.method)) return;
     const fetchSite = request.headers["sec-fetch-site"];
     if (fetchSite === "cross-site") return reply.code(403).send({ message: "跨站请求已拒绝" });
@@ -54,6 +70,17 @@ export async function createCloudApi(options: CloudApiOptions) {
   };
   const clearSessionCookie = (reply: FastifyReply) => {
     reply.clearCookie(COOKIE_NAME, { path: "/", httpOnly: true, secure: options.cookieSecure, sameSite: options.cookieSameSite || "lax" });
+  };
+  const actionUrl = (parameter: "verify" | "reset", token: string) => {
+    if (!publicWebUrl) throw new Error("邮件服务尚未启用");
+    const url = new URL(publicWebUrl);
+    url.searchParams.set(parameter, token);
+    return url.toString();
+  };
+  const sendEmailVerification = async (userId: string) => {
+    if (!options.emailDelivery) return;
+    const action = await auth.createEmailVerification(userId);
+    if (action) await options.emailDelivery.sendEmailVerification(action.user.email, actionUrl("verify", action.token));
   };
 
   app.get("/v1/health", async (_request, reply) => {
@@ -78,12 +105,83 @@ export async function createCloudApi(options: CloudApiOptions) {
         password: typeof body.password === "string" ? body.password : "",
       });
       setSessionCookie(reply, result.token);
-      return reply.code(201).send(result.session);
+      let verificationDelivery: "sent" | "failed" | undefined;
+      if (options.emailDelivery) {
+        try {
+          await sendEmailVerification(result.session.user.id);
+          verificationDelivery = "sent";
+        } catch (deliveryError) {
+          verificationDelivery = "failed";
+          request.log.error(deliveryError);
+        }
+      }
+      return reply.code(201).send({ ...result.session, ...(verificationDelivery ? { verificationDelivery } : {}) });
     } catch (error) {
       if (error instanceof DuplicateEmailError) return reply.code(409).send({ message: error.message });
       if (error instanceof Error && /邮箱|显示名称|密码/.test(error.message)) return reply.code(400).send({ message: error.message });
       request.log.error(error);
       return reply.code(500).send({ message: "暂时无法创建账户" });
+    }
+  });
+
+  app.post("/v1/auth/email/verify", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    const body = bodyRecord(request.body);
+    try {
+      const result = await auth.verifyEmail(typeof body.token === "string" ? body.token : "");
+      if (!result) return reply.code(400).send({ message: "验证链接无效或已经过期" });
+      setSessionCookie(reply, result.token);
+      return result.session;
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ message: "暂时无法验证邮箱" });
+    }
+  });
+
+  app.post("/v1/auth/email/resend", { config: { rateLimit: { max: 3, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    if (!options.emailDelivery) return reply.code(503).send({ message: "邮件服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    if (session.user.emailVerified) return reply.code(204).send();
+    try {
+      await sendEmailVerification(session.user.id);
+      return reply.code(204).send();
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(503).send({ message: "验证邮件发送失败，请稍后重试" });
+    }
+  });
+
+  app.post("/v1/auth/password/forgot", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    const body = bodyRecord(request.body);
+    try {
+      const action = await auth.createPasswordReset(typeof body.email === "string" ? body.email : "");
+      if (action && options.emailDelivery) {
+        await options.emailDelivery.sendPasswordReset(action.user.email, actionUrl("reset", action.token));
+      }
+    } catch (error) {
+      request.log.error(error);
+    }
+    return reply.code(202).send({ message: "如果该邮箱已注册，重置邮件会很快发出" });
+  });
+
+  app.post("/v1/auth/password/reset", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
+    const body = bodyRecord(request.body);
+    try {
+      const reset = await auth.resetPassword(
+        typeof body.token === "string" ? body.token : "",
+        typeof body.password === "string" ? body.password : "",
+      );
+      if (!reset) return reply.code(400).send({ message: "重置链接无效或已经过期" });
+      clearSessionCookie(reply);
+      return reply.code(204).send();
+    } catch (error) {
+      if (error instanceof Error && /密码/.test(error.message)) return reply.code(400).send({ message: error.message });
+      request.log.error(error);
+      return reply.code(500).send({ message: "暂时无法重置密码" });
     }
   });
 
@@ -109,10 +207,42 @@ export async function createCloudApi(options: CloudApiOptions) {
     return session;
   });
 
+  app.get("/v1/auth/sessions", async (request, reply): Promise<CloudSessionListPayload | FastifyReply> => {
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    return { sessions: await auth.listSessions(session.user.id, session.sessionId) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/auth/sessions/:id", async (request, reply) => {
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    if (!uuidPattern.test(request.params.id)) return reply.code(400).send({ message: "会话标识无效" });
+    const revoked = await auth.revokeUserSession(session.user.id, request.params.id);
+    if (!revoked) return reply.code(404).send({ message: "会话不存在" });
+    if (request.params.id === session.sessionId) clearSessionCookie(reply);
+    return reply.code(204).send();
+  });
+
+  app.post("/v1/auth/sessions/revoke-others", async (request, reply) => {
+    const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const revoked = await auth.revokeOtherSessions(session.user.id, session.sessionId);
+    return { revoked };
+  });
+
   app.get<{ Querystring: { kind?: string } }>("/v1/tenant/resources", async (request, reply) => {
     if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
     const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
     if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
     const kind = request.query.kind === undefined ? undefined : tenantResourceKind(request.query.kind);
     if (request.query.kind !== undefined && !kind) return reply.code(400).send({ message: "租户资源类型无效" });
     try {
@@ -129,6 +259,7 @@ export async function createCloudApi(options: CloudApiOptions) {
     if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
     const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
     if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
     const csrfToken = request.headers["x-csrf-token"];
     if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
       return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
@@ -158,6 +289,7 @@ export async function createCloudApi(options: CloudApiOptions) {
     if (!options.tenantStore) return reply.code(503).send({ message: "租户数据服务尚未启用" });
     const session = await auth.authenticate(request.cookies[COOKIE_NAME]);
     if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
     const csrfToken = request.headers["x-csrf-token"];
     if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
       return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });

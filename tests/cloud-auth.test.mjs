@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCloudApi } from "../apps/cloud-api/dist/app.js";
 import { DuplicateEmailError } from "../apps/cloud-api/dist/auth-service.js";
+import { ResendEmailDelivery } from "../apps/cloud-api/dist/email-delivery.js";
 import { hashPassword, verifyPassword } from "../apps/cloud-api/dist/password.js";
 import { TenantVersionConflictError } from "../apps/cloud-api/dist/tenant-resources.js";
 
@@ -10,6 +11,7 @@ class MemoryAuthStore {
   tenants = new Map();
   memberships = new Map();
   sessions = new Map();
+  actionTokens = new Map();
 
   async createAccount(input) {
     if ([...this.users.values()].some((user) => user.email === input.email)) throw new DuplicateEmailError("该邮箱已经注册");
@@ -18,6 +20,7 @@ class MemoryAuthStore {
       email: input.email,
       displayName: input.displayName,
       passwordHash: input.passwordHash,
+      emailVerifiedAt: input.emailVerifiedAt,
     });
     this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
     this.memberships.set(`${input.tenantId}:${input.userId}`, { tenantId: input.tenantId, userId: input.userId, role: "owner" });
@@ -25,6 +28,10 @@ class MemoryAuthStore {
 
   async findUserByEmail(email) {
     return [...this.users.values()].find((user) => user.email === email);
+  }
+
+  async findUserById(userId) {
+    return this.users.get(userId);
   }
 
   async findDefaultTenant(userId) {
@@ -38,10 +45,12 @@ class MemoryAuthStore {
     const membership = this.memberships.get(`${input.tenantId}:${input.userId}`);
     assert.ok(user && tenant && membership);
     const stored = {
+      id: input.id,
       tokenHash: input.tokenHash,
       csrfToken: input.csrfToken,
+      createdAt: new Date().toISOString(),
       expiresAt: input.expiresAt,
-      user: { id: user.id, email: user.email, displayName: user.displayName },
+      user: { id: user.id, email: user.email, displayName: user.displayName, emailVerifiedAt: user.emailVerifiedAt },
       tenant,
       role: membership.role,
     };
@@ -56,6 +65,96 @@ class MemoryAuthStore {
   async revokeSession(tokenHash) {
     this.sessions.delete(tokenHash);
   }
+
+  async createActionToken(input) {
+    for (const [hash, token] of this.actionTokens) {
+      if (token.userId === input.userId && token.purpose === input.purpose && !token.consumedAt) {
+        this.actionTokens.set(hash, { ...token, consumedAt: new Date().toISOString() });
+      }
+    }
+    this.actionTokens.set(input.tokenHash, { ...input, createdAt: new Date().toISOString() });
+  }
+
+  claimActionToken(hash, purpose) {
+    const token = this.actionTokens.get(hash);
+    if (!token || token.purpose !== purpose || token.consumedAt || Date.parse(token.expiresAt) <= Date.now()) return undefined;
+    this.actionTokens.set(hash, { ...token, consumedAt: new Date().toISOString() });
+    return token;
+  }
+
+  async verifyEmailWithToken(hash) {
+    const token = this.claimActionToken(hash, "verify_email");
+    if (!token) return undefined;
+    const user = this.users.get(token.userId);
+    if (!user) return undefined;
+    user.emailVerifiedAt ||= new Date().toISOString();
+    return user;
+  }
+
+  async resetPasswordWithToken(hash, passwordHash) {
+    const token = this.claimActionToken(hash, "reset_password");
+    if (!token) return false;
+    const user = this.users.get(token.userId);
+    if (!user) return false;
+    user.passwordHash = passwordHash;
+    for (const [sessionHash, session] of this.sessions) if (session.user.id === user.id) this.sessions.delete(sessionHash);
+    return true;
+  }
+
+  async listSessions(userId) {
+    return [...this.sessions.values()].filter((session) => session.user.id === userId)
+      .map(({ id, createdAt, expiresAt }) => ({ id, createdAt, expiresAt }));
+  }
+
+  async revokeUserSession(userId, sessionId) {
+    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.id === sessionId);
+    if (!entry) return false;
+    this.sessions.delete(entry[0]);
+    return true;
+  }
+
+  async revokeOtherSessions(userId, currentSessionId) {
+    let revoked = 0;
+    for (const [hash, session] of this.sessions) {
+      if (session.user.id === userId && session.id !== currentSessionId) {
+        this.sessions.delete(hash);
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+}
+
+test("Resend delivery sends text email with bearer auth and idempotency", async () => {
+  const previousFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(null, { status: 202 });
+  };
+  try {
+    const delivery = new ResendEmailDelivery({ apiKey: "test-resend-key", from: "Forge <no-reply@example.test>" });
+    await delivery.sendEmailVerification("person@example.test", "https://forge.example.test/?verify=test-token");
+    assert.equal(captured.url, "https://api.resend.com/emails");
+    assert.equal(captured.init.method, "POST");
+    assert.equal(captured.init.headers.authorization, "Bearer test-resend-key");
+    assert.match(captured.init.headers["idempotency-key"], /^[0-9a-f-]{36}$/i);
+    assert.deepEqual(JSON.parse(captured.init.body), {
+      from: "Forge <no-reply@example.test>",
+      to: ["person@example.test"],
+      subject: "验证你的 Forge 邮箱",
+      text: "请在 24 小时内打开下面的链接完成邮箱验证：\n\nhttps://forge.example.test/?verify=test-token\n\n如果不是你创建的账户，可以忽略这封邮件。",
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+class MemoryEmailDelivery {
+  verification = [];
+  resets = [];
+  async sendEmailVerification(email, url) { this.verification.push({ email, url }); }
+  async sendPasswordReset(email, url) { this.resets.push({ email, url }); }
 }
 
 class MemoryTenantStore {
@@ -124,6 +223,8 @@ test("registration creates a personal tenant and stores only a session-token dig
     const payload = response.json();
     assert.equal(payload.authenticated, true);
     assert.equal(payload.user.email, "person@example.com");
+    assert.equal(payload.user.emailVerified, true);
+    assert.match(payload.sessionId, /^[0-9a-f-]{36}$/);
     assert.equal(payload.tenant.role, "owner");
     assert.equal(payload.tenant.name, "测试用户的工作区");
     assert.equal("token" in payload, false);
@@ -162,6 +263,99 @@ test("registration creates a personal tenant and stores only a session-token dig
   }
 });
 
+test("email verification, password recovery, and session revocation form a complete account lifecycle", async () => {
+  const store = new MemoryAuthStore();
+  const tenantStore = new MemoryTenantStore();
+  const delivery = new MemoryEmailDelivery();
+  const origin = "https://forge.example";
+  const app = await createCloudApi({
+    store,
+    tenantStore,
+    emailDelivery: delivery,
+    publicWebUrl: `${origin}/?cloud=1`,
+    allowedOrigins: [origin],
+    cookieSecure: true,
+  });
+  try {
+    const registered = await app.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      headers: { origin },
+      payload: { email: "secure@example.com", displayName: "Secure User", password: "correct horse battery staple" },
+    });
+    assert.equal(registered.statusCode, 201);
+    assert.equal(registered.json().user.emailVerified, false);
+    assert.equal(registered.json().verificationDelivery, "sent");
+    assert.equal(delivery.verification.length, 1);
+    const unverifiedCookie = sessionCookie(registered);
+    const blockedResource = await app.inject({ method: "GET", url: "/v1/tenant/resources", headers: { cookie: unverifiedCookie } });
+    assert.equal(blockedResource.statusCode, 403);
+
+    const verificationToken = new URL(delivery.verification[0].url).searchParams.get("verify");
+    assert.ok(verificationToken);
+    assert.equal(store.actionTokens.has(verificationToken), false);
+    assert.match([...store.actionTokens.keys()][0], /^[a-f0-9]{64}$/);
+    const verified = await app.inject({
+      method: "POST",
+      url: "/v1/auth/email/verify",
+      headers: { origin },
+      payload: { token: verificationToken },
+    });
+    assert.equal(verified.statusCode, 200);
+    assert.equal(verified.json().user.emailVerified, true);
+    const verifiedCookie = sessionCookie(verified);
+    const replayVerification = await app.inject({ method: "POST", url: "/v1/auth/email/verify", headers: { origin }, payload: { token: verificationToken } });
+    assert.equal(replayVerification.statusCode, 400);
+
+    const sessions = await app.inject({ method: "GET", url: "/v1/auth/sessions", headers: { cookie: verifiedCookie } });
+    assert.equal(sessions.statusCode, 200);
+    assert.equal(sessions.json().sessions.length, 2);
+    assert.equal(sessions.json().sessions.filter((session) => session.current).length, 1);
+
+    const unknownReset = await app.inject({ method: "POST", url: "/v1/auth/password/forgot", headers: { origin }, payload: { email: "missing@example.com" } });
+    const knownReset = await app.inject({ method: "POST", url: "/v1/auth/password/forgot", headers: { origin }, payload: { email: "secure@example.com" } });
+    assert.equal(unknownReset.statusCode, 202);
+    assert.deepEqual(unknownReset.json(), knownReset.json());
+    assert.equal(delivery.resets.length, 1);
+    const resetToken = new URL(delivery.resets[0].url).searchParams.get("reset");
+    assert.ok(resetToken);
+    assert.equal(store.actionTokens.has(resetToken), false);
+    const reset = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password/reset",
+      headers: { origin },
+      payload: { token: resetToken, password: "a new secure passphrase 2026" },
+    });
+    assert.equal(reset.statusCode, 204);
+    assert.deepEqual((await app.inject({ method: "GET", url: "/v1/auth/session", headers: { cookie: verifiedCookie } })).json(), { authenticated: false });
+    assert.equal((await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "correct horse battery staple" } })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url: "/v1/auth/password/reset", headers: { origin }, payload: { token: resetToken, password: "another secure passphrase" } })).statusCode, 400);
+
+    const firstLogin = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
+    const secondLogin = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: "secure@example.com", password: "a new secure passphrase 2026" } });
+    assert.equal(firstLogin.statusCode, 200);
+    assert.equal(secondLogin.statusCode, 200);
+    const secondCookie = sessionCookie(secondLogin);
+    const revokeOthers = await app.inject({
+      method: "POST",
+      url: "/v1/auth/sessions/revoke-others",
+      headers: { cookie: secondCookie, origin, "x-csrf-token": secondLogin.json().csrfToken },
+    });
+    assert.deepEqual(revokeOthers.json(), { revoked: 1 });
+    assert.deepEqual((await app.inject({ method: "GET", url: "/v1/auth/session", headers: { cookie: sessionCookie(firstLogin) } })).json(), { authenticated: false });
+
+    const revokeCurrent = await app.inject({
+      method: "DELETE",
+      url: `/v1/auth/sessions/${secondLogin.json().sessionId}`,
+      headers: { cookie: secondCookie, origin, "x-csrf-token": secondLogin.json().csrfToken },
+    });
+    assert.equal(revokeCurrent.statusCode, 204);
+    assert.deepEqual((await app.inject({ method: "GET", url: "/v1/auth/session", headers: { cookie: secondCookie } })).json(), { authenticated: false });
+  } finally {
+    await app.close();
+  }
+});
+
 test("cloud auth UI is optional and never stores a session token in web storage", async () => {
   const { readFile } = await import("node:fs/promises");
   const gate = await readFile("apps/web/src/CloudAuthGate.tsx", "utf8");
@@ -169,8 +363,11 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   const preload = await readFile("apps/desktop/preload.cjs", "utf8");
   const migration = await readFile("apps/cloud-api/migrations/001_identity.sql", "utf8");
   const tenantMigration = await readFile("apps/cloud-api/migrations/002_tenant_resources.sql", "utf8");
+  const accountSecurityMigration = await readFile("apps/cloud-api/migrations/003_account_security.sql", "utf8");
   const postgresStore = await readFile("apps/cloud-api/src/postgres-store.ts", "utf8");
   const cloudServer = await readFile("apps/cloud-api/src/server.ts", "utf8");
+  const emailDelivery = await readFile("apps/cloud-api/src/email-delivery.ts", "utf8");
+  const cloudDockerfile = await readFile("apps/cloud-api/Dockerfile", "utf8");
   const appRole = await readFile("infra/postgres/init/001_app_role.sql", "utf8");
   const syncPanel = await readFile("apps/web/src/CloudWorkspacePanel.tsx", "utf8");
   assert.match(gate, /credentials: "include"/);
@@ -183,15 +380,38 @@ test("cloud auth UI is optional and never stores a session token in web storage"
   assert.match(tenantMigration, /ENABLE ROW LEVEL SECURITY/);
   assert.match(tenantMigration, /FORCE ROW LEVEL SECURITY/);
   assert.match(tenantMigration, /current_setting\('forge\.tenant_id'/);
+  assert.match(accountSecurityMigration, /token_hash char\(64\)/);
+  assert.doesNotMatch(accountSecurityMigration, /\btoken text\b/i);
+  assert.match(accountSecurityMigration, /purpose IN \('verify_email', 'reset_password'\)/);
   assert.match(postgresStore, /WHERE tenant_id = \$1/);
+  assert.match(postgresStore, /pg_advisory_lock/);
+  assert.match(postgresStore, /forge_schema_migrations/);
   assert.match(cloudServer, /FORGE_CLOUD_MIGRATION_DATABASE_URL/);
+  assert.match(cloudServer, /FORGE_CLOUD_RESEND_API_KEY/);
+  assert.match(emailDelivery, /https:\/\/api\.resend\.com\/emails/);
+  assert.match(cloudDockerfile, /USER node/);
+  assert.match(cloudDockerfile, /\/v1\/health/);
   assert.match(appRole, /NOBYPASSRLS/);
   assert.match(appRole, /REVOKE CREATE ON SCHEMA public FROM forge_app/);
+  assert.match(gate, /\/v1\/auth\/email\/verify/);
+  assert.match(gate, /检查验证状态/);
+  assert.match(gate, /\/v1\/auth\/password\/forgot/);
+  assert.match(gate, /\/v1\/auth\/password\/reset/);
   assert.match(syncPanel, /expectedVersion/);
+  assert.match(syncPanel, /\/v1\/auth\/sessions/);
+  assert.match(syncPanel, /退出其他设备/);
   assert.match(syncPanel, /title: task\.title,[\s\S]*pinned: Boolean\(task\.pinned\),[\s\S]*archived: Boolean\(task\.archived\),[\s\S]*updatedAt: task\.updatedAt/);
   assert.doesNotMatch(syncPanel, /payload:\s*task\b/);
   assert.match(syncPanel, /使用云端/);
   assert.match(syncPanel, /使用本机/);
+});
+
+test("email delivery requires an explicit public web URL", async () => {
+  const emailDelivery = { sendEmailVerification: async () => undefined, sendPasswordReset: async () => undefined };
+  await assert.rejects(
+    createCloudApi({ store: new MemoryAuthStore(), allowedOrigins: ["http://127.0.0.1:5173"], cookieSecure: false, emailDelivery }),
+    /publicWebUrl/,
+  );
 });
 
 test("login errors do not reveal whether an account exists", async () => {

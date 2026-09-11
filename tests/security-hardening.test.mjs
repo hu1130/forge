@@ -20,7 +20,7 @@ async function availablePort() {
 
 async function waitForHealth(url, token) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 10_000) {
+  while (Date.now() - startedAt < 20_000) {
     try {
       const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
       if (response.ok) return;

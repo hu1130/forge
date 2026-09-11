@@ -8,15 +8,23 @@ class QaAuthStore {
   tenants = new Map();
   memberships = new Map();
   sessions = new Map();
+  actionTokens = new Map();
 
   async createAccount(input) {
     if ([...this.users.values()].some((user) => user.email === input.email)) throw new DuplicateEmailError("该邮箱已经注册");
-    this.users.set(input.userId, { id: input.userId, email: input.email, displayName: input.displayName, passwordHash: input.passwordHash });
+    this.users.set(input.userId, {
+      id: input.userId,
+      email: input.email,
+      displayName: input.displayName,
+      passwordHash: input.passwordHash,
+      emailVerifiedAt: input.emailVerifiedAt,
+    });
     this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
     this.memberships.set(input.userId, { tenantId: input.tenantId, role: "owner" });
   }
 
   async findUserByEmail(email) { return [...this.users.values()].find((user) => user.email === email); }
+  async findUserById(userId) { return this.users.get(userId); }
   async findDefaultTenant(userId) { return this.memberships.has(userId) ? { id: this.memberships.get(userId).tenantId } : undefined; }
 
   async createSession(input) {
@@ -25,10 +33,12 @@ class QaAuthStore {
     const membership = this.memberships.get(input.userId);
     assert.ok(user && tenant && membership?.tenantId === tenant.id);
     const session = {
+      id: input.id,
       tokenHash: input.tokenHash,
       csrfToken: input.csrfToken,
+      createdAt: new Date().toISOString(),
       expiresAt: input.expiresAt,
-      user: { id: user.id, email: user.email, displayName: user.displayName },
+      user: { id: user.id, email: user.email, displayName: user.displayName, emailVerifiedAt: user.emailVerifiedAt },
       tenant,
       role: membership.role,
     };
@@ -38,6 +48,29 @@ class QaAuthStore {
 
   async findSession(hash) { return this.sessions.get(hash); }
   async revokeSession(hash) { this.sessions.delete(hash); }
+  async createActionToken(input) { this.actionTokens.set(input.tokenHash, input); }
+  async verifyEmailWithToken() { return undefined; }
+  async resetPasswordWithToken() { return false; }
+  async listSessions(userId) {
+    return [...this.sessions.values()].filter((session) => session.user.id === userId)
+      .map(({ id, createdAt, expiresAt }) => ({ id, createdAt, expiresAt }));
+  }
+  async revokeUserSession(userId, sessionId) {
+    const entry = [...this.sessions.entries()].find(([, session]) => session.user.id === userId && session.id === sessionId);
+    if (!entry) return false;
+    this.sessions.delete(entry[0]);
+    return true;
+  }
+  async revokeOtherSessions(userId, currentSessionId) {
+    let revoked = 0;
+    for (const [hash, session] of this.sessions) {
+      if (session.user.id === userId && session.id !== currentSessionId) {
+        this.sessions.delete(hash);
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
 }
 
 class QaTenantStore {

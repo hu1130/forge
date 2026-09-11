@@ -1,0 +1,10 @@
+.git
+.codex
+node_modules
+release
+**/dist
+**/.bundle
+*.log
+.env
+.env.*
+!.env.example

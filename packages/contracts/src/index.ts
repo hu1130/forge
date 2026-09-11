@@ -166,6 +166,18 @@ export interface CloudAuthUser {
   id: string;
   email: string;
   displayName: string;
+  emailVerified: boolean;
+}
+
+export interface CloudSessionInfo {
+  id: string;
+  current: boolean;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface CloudSessionListPayload {
+  sessions: CloudSessionInfo[];
 }
 
 export interface CloudTenantContext {
@@ -185,6 +197,7 @@ export type CloudAuthSession =
   | { authenticated: false }
   | {
       authenticated: true;
+      sessionId: string;
       user: CloudAuthUser;
       tenant: CloudTenantContext;
       csrfToken: string;

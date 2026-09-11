@@ -1,12 +1,17 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.14 在租户隔离基础上加入冲突安全的任务与 Skill/MCP 云端目录同步，本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.15 在安全的租户目录同步基础上补齐邮箱验证、密码找回与登录设备管理，并提供可部署的 Cloud API 容器，本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
 - Forge Cloud 注册、登录、会话恢复、退出和当前账户接口；注册时原子创建用户、个人租户与 owner 成员关系
+- 新账户必须通过一次性邮件链接验证后才能读取或写入租户资源；支持重新发送验证邮件
+- 忘记密码与一次性重置链接；重置成功后撤销该账户全部旧会话，且接口不泄露邮箱是否注册
+- “设置 → 账户与云端”可查看当前有效会话、退出其他会话或撤销指定会话；不采集设备名称、IP 或硬件信息
 - PostgreSQL 用户、租户、成员和会话迁移；业务租户身份只由服务端会话产生，不接受客户端指定的租户 ID
 - 密码使用带独立随机盐的 scrypt；数据库只保存会话令牌 SHA-256 摘要，浏览器使用 HttpOnly Cookie 和 CSRF 令牌
+- 邮件验证和密码重置令牌只保存 SHA-256 摘要、限时且只能消费一次；生产环境通过 Resend 发送
+- 数据库迁移使用 advisory lock 和迁移台账；Cloud API 提供 Node 24 非 root 容器、数据库健康检查及生产部署清单
 - 可选 Cloud 登录界面及工作台账户入口；未设置 Cloud API URL 时保持原有单机行为
 - Electron 主进程使用 HttpOnly 会话向 Cloud API 复核用户和租户，渲染器不能指定租户 ID；验证后 Daemon 才切换租户资料
 - 项目、任务、Skill、MCP 配置和 MCP 加密令牌按租户物理分目录；退出 Cloud 账户后切回原有本机资料
@@ -46,7 +51,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.14.0.exe
+release/Forge-Setup-0.15.0.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -95,6 +100,8 @@ pnpm dev:cloud
 
 浏览器打开 `http://127.0.0.1:5173/?cloud=1`。`postgres-role` 会为新旧开发卷幂等配置非超级应用角色；Cloud API 使用 `FORGE_CLOUD_MIGRATION_DATABASE_URL` 执行迁移，运行请求只连接 `DATABASE_URL` 中的 `NOSUPERUSER NOBYPASSRLS` 角色。部署时应使用独立迁移凭据，并通过 `FORGE_CLOUD_ORIGINS` 设置允许的 Web/桌面客户端来源。跨站 HTTPS 桌面客户端场景还需设置 `FORGE_CLOUD_COOKIE_SAMESITE=none`。
 
+开发环境未配置 Resend 时，Cloud API 会把验证与重置链接输出到本机终端，便于完成端到端测试；生产环境缺少 Resend 配置会拒绝启动。容器部署、环境变量与上线验收步骤见 [Cloud 部署文档](docs/cloud-deployment.md)。
+
 `apps/cloud-api` 是中心化账户与租户控制面，不会随桌面安装包分发，也不会把数据库连接信息交给 Electron 或浏览器。当前完整任务内容、代码、终端输出和扩展文件仍保存在按租户隔离的本机 Daemon；用户可手动同步白名单任务与市场扩展目录元数据，但不会跨设备恢复完整任务或自定义扩展。
 
 ## 构建 Windows 安装包
@@ -121,7 +128,7 @@ node scripts/verify-packaged-mcp-call.mjs
 
 登录 Cloud 后可在“设置 → 账户与云端”手动同步任务目录以及从扩展市场安装的 Skill/MCP 安全目录。扩展同步只上传市场 ID、版本、作用域、连接类型、审批模式、启用状态和更新时间；自定义 Skill 内容、MCP 命令、地址、参数、环境变量、Token 与本机路径不会上传。首次同步建立回执，单边变化自动合并，两端同时变化时必须由用户选择。
 
-当前版本还不包含：邮箱验证与密码找回、MFA、团队邀请与角色管理、跨设备完整任务恢复、自定义 Skill/MCP 加密备份、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
+当前版本还不包含：MFA、团队邀请与角色管理、跨设备完整任务恢复、自定义 Skill/MCP 加密备份、云端 Agent Worker 隔离、用量与计费、市场账号与用户发布、评分或付费、MCP OAuth 登录、多 Agent、OpenAI/Claude/Gemini 提供商、应用自动更新和商业代码签名。未接入能力不会自动降级成其他模型。
 
 ### 发布远程市场目录
 

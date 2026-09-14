@@ -62,7 +62,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.21.0.exe
+release/Forge-Setup-0.21.1.exe
 ```
 
 1. 运行安装程序并启动 Forge。

@@ -28,7 +28,7 @@ export class ResendEmailDelivery implements EmailDelivery {
         authorization: `Bearer ${this.options.apiKey}`,
         "content-type": "application/json",
         "idempotency-key": randomUUID(),
-        "user-agent": "Forge-Cloud/0.21.0",
+        "user-agent": "Forge-Cloud/0.21.1",
       },
       body: JSON.stringify({ from: this.options.from, to: [to], subject, text }),
       signal: AbortSignal.timeout(12_000),

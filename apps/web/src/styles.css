@@ -832,20 +832,20 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 
 /* v0.21 — OpenWork-inspired calm workbench. Existing Forge capabilities remain intact. */
 :root {
-  --ink: #20242b;
-  --muted: #68707d;
-  --muted-soft: #969da7;
-  --line: #e7e9ed;
-  --line-strong: #d8dce2;
-  --canvas: #f2f3f5;
+  --ink: #171a1f;
+  --muted: #656a73;
+  --muted-soft: #969ba3;
+  --line: #eceef1;
+  --line-strong: #dfe2e6;
+  --canvas: #f4f5f6;
   --panel: #ffffff;
-  --rail: #f8f8f9;
+  --rail: #f8f9fa;
   --surface: #f6f7f8;
-  --surface-strong: #eef0f3;
-  --blue: #5b63e6;
-  --blue-hover: #4d55d2;
-  --blue-soft: #f0f1ff;
-  --shadow-menu: 0 16px 44px rgba(27, 31, 39, .14);
+  --surface-strong: #eef0f2;
+  --blue: #011627;
+  --blue-hover: #000000;
+  --blue-soft: #eef1f3;
+  --shadow-menu: 0 16px 44px rgba(1, 22, 39, .14);
 }
 
 body { background: var(--canvas); }
@@ -878,9 +878,9 @@ body { background: var(--canvas); }
   box-shadow: 0 1px 2px rgba(24, 28, 35, .03);
 }
 .sidebar-brand { height: 42px; gap: 10px; padding: 0 8px; color: var(--ink); font-size: 17px; }
-.sidebar-brand .forge-mark { color: var(--blue); }
+.sidebar-brand .forge-mark { color: var(--ink); }
 .sidebar-brand strong { font-weight: 720; letter-spacing: -.025em; }
-.sidebar .new-task { height: 42px; justify-content: flex-start; margin: 9px 2px 0; padding: 0 13px; color: #fff; background: var(--blue); border: 0; border-radius: 10px; box-shadow: 0 7px 18px rgba(91, 99, 230, .18); font-weight: 650; }
+.sidebar .new-task { height: 42px; justify-content: flex-start; margin: 9px 2px 0; padding: 0 13px; color: #fff; background: var(--blue); border: 0; border-radius: 10px; box-shadow: 0 6px 16px rgba(1, 22, 39, .13); font-weight: 650; }
 .sidebar .new-task:hover { background: var(--blue-hover); border-color: transparent; }
 .sidebar-section { margin-top: 19px; }
 .sidebar .section-title { padding: 0 8px; color: var(--muted); font-size: 10px; font-weight: 690; letter-spacing: .035em; text-transform: none; }
@@ -931,8 +931,8 @@ body { background: var(--canvas); }
 
 .activity-feed { padding: 28px 34px 36px; background: #fff; }
 .activity-row { width: min(100%, 780px); padding-bottom: 27px; }
-.user-message .activity-content { max-width: min(78%, 620px); padding: 11px 14px; color: #31374a; background: #f1f2f7; border-radius: 13px 13px 4px 13px; }
-.user-message .activity-content > p { color: #31374a; font-size: 12px; line-height: 1.65; }
+.user-message .activity-content { max-width: min(78%, 620px); padding: 11px 14px; color: #292d33; background: #f2f3f4; border-radius: 13px 13px 4px 13px; }
+.user-message .activity-content > p { color: #292d33; font-size: 12px; line-height: 1.65; }
 .forge-turn { grid-template-columns: 30px minmax(0, 1fr); gap: 12px; }
 .activity-icon { width: 30px; height: 30px; }
 .turn-content { max-width: 760px; }
@@ -943,7 +943,7 @@ body { background: var(--canvas); }
 
 .composer-wrap { padding: 8px 24px 17px; background: linear-gradient(to bottom, rgba(255,255,255,0), #fff 15px); }
 .composer { max-width: 820px; background: #fff; border-color: var(--line-strong); border-radius: 13px; box-shadow: 0 12px 32px rgba(26, 30, 37, .09); }
-.composer:focus-within { border-color: #a9aeea; box-shadow: 0 0 0 3px rgba(91, 99, 230, .08), 0 12px 32px rgba(26, 30, 37, .09); }
+.composer:focus-within { border-color: #9ca3aa; box-shadow: 0 0 0 3px rgba(1, 22, 39, .06), 0 12px 32px rgba(26, 30, 37, .09); }
 .composer textarea { min-height: 70px; padding: 15px 16px 6px; font-size: 12px; }
 .composer-actions { min-height: 43px; height: auto; gap: 6px; padding: 3px 9px 9px; }
 .composer-icon, .context-chip, .composer-model, .approval-mode { color: var(--muted); background: transparent; border: 0; border-radius: 7px; }
@@ -980,7 +980,7 @@ body { background: var(--canvas); }
 .settings-screen { width: 100%; height: 100%; display: grid; grid-template-columns: 230px 220px minmax(0, 1fr); overflow: hidden; background: #fff; }
 .settings-brand-rail { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 20px 13px 14px; background: #f7f7f8; border-right: 1px solid var(--line); }
 .settings-brand { height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 9px; margin-bottom: 18px; font-size: 17px; }
-.settings-forge-mark { width: 21px; height: 21px; display: inline-block; border: 2px solid var(--blue); border-radius: 4px; transform: rotate(45deg); box-shadow: inset 0 0 0 4px #f7f7f8, inset 0 0 0 6px var(--blue); }
+.settings-forge-mark { width: 21px; height: 21px; display: inline-block; border: 2px solid var(--ink); border-radius: 4px; transform: rotate(45deg); box-shadow: inset 0 0 0 4px #f7f7f8, inset 0 0 0 6px var(--ink); }
 .settings-brand-rail > button { min-height: 39px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; color: var(--muted); background: transparent; border: 0; border-radius: 8px; cursor: pointer; text-align: left; }
 .settings-brand-rail > button:hover { color: var(--ink); background: #eceef1; }
 .settings-brand-rail > button span { min-width: 0; display: grid; gap: 2px; }
@@ -1037,7 +1037,7 @@ body { background: var(--canvas); }
 .permission-note small { color: #4e765f; font-size: 9px; line-height: 1.55; }
 .appearance-options { display: grid; grid-template-columns: repeat(2, minmax(0, 260px)); gap: 12px; margin-bottom: 16px; }
 .appearance-options > button { display: grid; gap: 7px; padding: 12px; color: var(--muted); background: #fff; border: 1px solid var(--line); border-radius: 11px; cursor: pointer; text-align: left; }
-.appearance-options > button:hover, .appearance-options > button.selected { border-color: #aeb3ed; box-shadow: 0 0 0 2px rgba(91,99,230,.08); }
+.appearance-options > button:hover, .appearance-options > button.selected { border-color: #9ba1a9; box-shadow: 0 0 0 2px rgba(1,22,39,.06); }
 .appearance-options strong { color: var(--ink); font-size: 11px; }
 .appearance-options small { font-size: 9px; }
 .density-preview { height: 78px; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #f5f6f7; border-radius: 8px; }

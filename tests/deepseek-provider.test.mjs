@@ -35,7 +35,10 @@ test("DeepSeek turns use App Server and support interruption", async () => {
 
 test("DeepSeek approval requests are surfaced instead of silently declined", async () => {
   const source = await readFile("apps/daemon/src/server.ts", "utf8");
-  assert.match(source, /approvalPolicy: "untrusted"/);
+  const contracts = await readFile("packages/contracts/src/index.ts", "utf8");
+  assert.match(source, /approvalPolicy: store\.preferences\(\)\.approvalPolicy/);
+  assert.match(source, /app\.patch<\{ Body: Partial<WorkspacePreferences> \}>/);
+  assert.match(contracts, /ForgeApprovalPolicy = "untrusted" \| "on-request"/);
   assert.match(source, /approvalsReviewer: "user"/);
   assert.match(source, /\/api\/approvals\/:id/);
   assert.doesNotMatch(source, /requestApproval"\) \{\s*bridge\.respond\(message\.id, \{ decision: "decline" \}\)/);

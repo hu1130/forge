@@ -5,6 +5,7 @@ import path from "node:path";
 import type {
   Activity, CloudTaskMetadata, EncryptedTaskBackupEnvelope, ForgeIdentityContext, ForgeTask, LocalProfileImportResult,
   LocalProfileSummary, QueuedTurn, TaskBackupCreateResult, TaskBackupRestoreResult, TaskSyncReceipt, TaskSyncSnapshot,
+  WorkspacePreferences,
 } from "@forge/contracts";
 import { createEncryptedTaskBackup, decryptTaskBackup } from "./task-backup.js";
 
@@ -13,6 +14,7 @@ interface PersistedState {
   tenantId: string;
   userId: string;
   workspacePath: string;
+  preferences: WorkspacePreferences;
   tasks: ForgeTask[];
   taskSyncReceipts: Record<string, TaskSyncReceipt>;
 }
@@ -24,6 +26,12 @@ function validIsoTimestamp(value: string) {
 }
 
 const localIdentity: ForgeIdentityContext = { tenantId: "local", userId: "local", mode: "local" };
+const defaultPreferences: WorkspacePreferences = {
+  defaultProviderId: "deepseek",
+  approvalPolicy: "untrusted",
+  rememberInspectorTab: true,
+  defaultInspectorTab: "changes",
+};
 
 export function tenantStorageKey(tenantId: string) {
   return createHash("sha256").update(tenantId).digest("hex").slice(0, 24);
@@ -31,10 +39,11 @@ export function tenantStorageKey(tenantId: string) {
 
 function seedState(workspacePath: string, identity: ForgeIdentityContext): PersistedState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     tenantId: identity.tenantId,
     userId: identity.userId,
     workspacePath,
+    preferences: { ...defaultPreferences },
     tasks: [],
     taskSyncReceipts: {},
   };
@@ -80,12 +89,13 @@ export class TaskStore {
     }
 
     const workspacePath = loaded.workspacePath || this.defaultWorkspacePath;
-    const migratingToIsolatedRuntime = ![2, 3, 4].includes(loaded.schemaVersion || 0);
+    const migratingToIsolatedRuntime = ![2, 3, 4, 5].includes(loaded.schemaVersion || 0);
     this.state = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       tenantId: this.identity.tenantId,
       userId: this.identity.userId,
       workspacePath,
+      preferences: this.validPreferences(loaded.preferences) ? { ...loaded.preferences } : { ...defaultPreferences },
       tasks: (loaded.tasks || []).map((task) => {
         const migrated: ForgeTask = {
           ...task,
@@ -150,6 +160,29 @@ export class TaskStore {
 
   identityContext() {
     return { ...this.identity };
+  }
+
+  preferences() {
+    return { ...this.state.preferences };
+  }
+
+  async updatePreferences(patch: Partial<WorkspacePreferences>) {
+    const allowedKeys = new Set(["defaultProviderId", "approvalPolicy", "rememberInspectorTab", "defaultInspectorTab"]);
+    if (Object.keys(patch).some((key) => !allowedKeys.has(key))) throw new Error("工作区偏好设置包含未知字段");
+    const next = { ...this.state.preferences, ...patch };
+    if (!this.validPreferences(next)) throw new Error("工作区偏好设置无效");
+    this.state.preferences = next;
+    await this.persist();
+    return this.preferences();
+  }
+
+  private validPreferences(value: unknown): value is WorkspacePreferences {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Partial<WorkspacePreferences>;
+    return (candidate.defaultProviderId === "demo" || candidate.defaultProviderId === "deepseek")
+      && (candidate.approvalPolicy === "untrusted" || candidate.approvalPolicy === "on-request")
+      && typeof candidate.rememberInspectorTab === "boolean"
+      && (candidate.defaultInspectorTab === "changes" || candidate.defaultInspectorTab === "terminal" || candidate.defaultInspectorTab === "git");
   }
 
   private async readLocalProfile() {

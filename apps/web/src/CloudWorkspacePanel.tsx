@@ -28,6 +28,7 @@ interface CloudWorkspacePanelProps {
   anyTaskRunning: boolean;
   onTasksChanged: () => Promise<void>;
   onExtensionsChanged: () => Promise<void>;
+  showBackup?: boolean;
 }
 
 async function responsePayload<T>(response: Response, fallback: string) {
@@ -490,13 +491,13 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
 
     <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>目录同步与加密备份彼此独立</strong><small>普通同步只上传任务和市场扩展的安全目录元数据。只有你主动创建端到端加密备份时，任务历史才会以密文上传；工作区文件、Skill/MCP 配置、Token 与本机路径仍不会上传。</small></span></div>
 
-    <CloudBackupPanel
+    {props.showBackup !== false && <CloudBackupPanel
       tenantId={props.session.tenant.id}
       cloudApiBase={props.cloudApiBase}
       csrfToken={props.session.csrfToken}
       anyTaskRunning={props.anyTaskRunning}
       onTasksChanged={props.onTasksChanged}
-    />
+    />}
 
     <div className="cloud-action-grid">
       <section>

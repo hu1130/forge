@@ -29,7 +29,7 @@ const app = await createCloudApi({
   requireOriginForUnsafeRequests: config.production,
   logger: config.production ? {
     level: config.logLevel,
-    base: { service: "forge-cloud-api", version: "0.20.0" },
+    base: { service: "forge-cloud-api", version: "0.21.0" },
     redact: { paths: ["req.headers.cookie", "req.headers.authorization", "res.headers['set-cookie']"], censor: "[REDACTED]" },
   } : false,
 });

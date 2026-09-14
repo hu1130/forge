@@ -83,6 +83,41 @@ test("task archive state survives a reload and can be restored", async () => {
   }
 });
 
+test("workspace preferences are validated, isolated, and survive reload", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-task-preferences-"));
+  const previousDataDir = process.env.FORGE_DATA_DIR;
+  process.env.FORGE_DATA_DIR = dataDir;
+
+  try {
+    const { TaskStore } = await import(`${taskStoreUrl}?preferences=${Date.now()}`);
+    const store = new TaskStore("C:\\workspace");
+    await store.load();
+    assert.deepEqual(store.preferences(), {
+      defaultProviderId: "deepseek",
+      approvalPolicy: "untrusted",
+      rememberInspectorTab: true,
+      defaultInspectorTab: "changes",
+    });
+    await store.updatePreferences({
+      defaultProviderId: "demo",
+      approvalPolicy: "on-request",
+      rememberInspectorTab: false,
+      defaultInspectorTab: "git",
+    });
+
+    const reloaded = new TaskStore("C:\\workspace");
+    await reloaded.load();
+    assert.equal(reloaded.preferences().approvalPolicy, "on-request");
+    assert.equal(reloaded.preferences().defaultInspectorTab, "git");
+    await assert.rejects(() => reloaded.updatePreferences({ approvalPolicy: "never" }), /偏好设置无效/);
+    await assert.rejects(() => reloaded.updatePreferences({ hiddenOption: true }), /未知字段/);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.FORGE_DATA_DIR;
+    else process.env.FORGE_DATA_DIR = previousDataDir;
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("queued turns persist, reorder, and survive an interrupted daemon restart", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "forge-task-turn-queue-"));
   const previousDataDir = process.env.FORGE_DATA_DIR;

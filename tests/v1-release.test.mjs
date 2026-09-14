@@ -95,3 +95,20 @@ test("terminal UI is split into an on-demand chunk", async () => {
   assert.match(app, /lazy\(\(\) => import\("\.\/TerminalPanel"\)\)/);
   assert.match(app, /<Suspense/);
 });
+
+test("v0.21 workbench exposes only persisted configuration surfaces", async () => {
+  const server = await readFile("apps/daemon/src/server.ts", "utf8");
+  const app = await readFile("apps/web/src/App.tsx", "utf8");
+  const settings = await readFile("apps/web/src/SettingsModal.tsx", "utf8");
+  const styles = await readFile("apps/web/src/styles.css", "utf8");
+  assert.match(server, /"\/api\/preferences"/);
+  assert.match(app, /className="window-drag-strip"/);
+  assert.doesNotMatch(app, /className="topbar"/);
+  for (const label of ["默认模型", "审批策略", "默认右侧面板", "减少动画", "扩展市场", "MCP 服务"]) {
+    assert.ok(settings.includes(label), `Missing real settings surface: ${label}`);
+  }
+  assert.match(settings, /showBackup=\{false\}/);
+  assert.match(styles, /OpenWork-inspired calm workbench/);
+  assert.doesNotMatch(settings, />Automations</);
+  assert.doesNotMatch(settings, />Apps</);
+});

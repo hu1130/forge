@@ -44,6 +44,17 @@ async function capture(window, filename) {
   window.hide();
 }
 
+async function dismissLocalOnboarding(window) {
+  const dismissed = await window.webContents.executeJavaScript(`
+    (() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('先使用演示模式'));
+      button?.click();
+      return Boolean(button);
+    })()
+  `);
+  if (dismissed) await pause(250);
+}
+
 function createWindow(width, height) {
   return new BrowserWindow({
     show: false,
@@ -58,19 +69,20 @@ function createWindow(width, height) {
 app.whenReady().then(async () => {
   mkdirSync(outputDir, { recursive: true });
   const windows = [];
-  let window = createWindow(1440, 900);
+  let window = createWindow(1600, 1000);
   windows.push(window);
   await window.loadURL(previewUrl);
   if (!await waitForSettledUi(window)) throw new Error("Preview UI did not settle before the first capture");
   const previewIsCloudAuth = await window.webContents.executeJavaScript("Boolean(document.querySelector('.cloud-auth-shell'))");
-  await capture(window, previewIsCloudAuth ? "forge-cloud-login-1440.png" : "forge-workbench-structural-1440.png");
+  if (!previewIsCloudAuth) await dismissLocalOnboarding(window);
+  await capture(window, previewIsCloudAuth ? "forge-cloud-login-1600.png" : "forge-workbench-v021-1600.png");
 
   window = createWindow(1000, 700);
   windows.push(window);
   await window.loadURL(previewUrl);
-  await capture(window, previewIsCloudAuth ? "forge-cloud-login-1000.png" : "forge-workbench-structural-1000.png");
+  await capture(window, previewIsCloudAuth ? "forge-cloud-login-1000.png" : "forge-workbench-v021-1000.png");
 
-  window = createWindow(1440, 900);
+  window = createWindow(1600, 1000);
   windows.push(window);
   await window.loadURL(previewUrl);
   if (!await waitForSettledUi(window)) throw new Error("Preview UI did not settle before interaction capture");
@@ -79,7 +91,7 @@ app.whenReady().then(async () => {
       [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('忘记密码'))?.click()
     `);
     if (!await waitForSelector(window, "#cloud-auth-title")) throw new Error("Forgot-password UI did not render");
-    await capture(window, "forge-cloud-forgot-password-1440.png");
+    await capture(window, "forge-cloud-forgot-password-1600.png");
 
     const resetUrl = new URL(previewUrl);
     resetUrl.searchParams.set("reset", "A".repeat(43));
@@ -88,20 +100,20 @@ app.whenReady().then(async () => {
     await window.loadURL(resetUrl.toString());
     await capture(window, "forge-cloud-reset-password-1000.png");
   } else {
-    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="设置"]')?.click()`);
-    await pause(200);
+    await window.webContents.executeJavaScript(`document.querySelector('.sidebar-settings')?.click()`);
+    if (!await waitForSelector(window, ".settings-screen")) throw new Error("Settings UI did not render");
     await window.webContents.executeJavaScript(`
-      const button = document.querySelectorAll('.settings-nav button')[1];
+      const button = [...document.querySelectorAll('.settings-nav button')].find((item) => item.textContent?.includes('偏好设置'));
       button?.dispatchEvent(
         new MouseEvent('click', { bubbles: true, cancelable: true, view: window })
       );
     `);
     await pause(300);
-    await capture(window, "forge-marketplace-structural-1440.png");
+    await capture(window, "forge-settings-preferences-v021-1600.png");
   }
 
   if (cloudAccountBootstrapUrl) {
-    window = createWindow(1440, 900);
+    window = createWindow(1600, 1000);
     windows.push(window);
     await window.loadURL(cloudAccountBootstrapUrl);
     if (!await waitForSelector(window, ".app-shell", 10000)) {
@@ -109,9 +121,12 @@ app.whenReady().then(async () => {
       throw new Error(`Cloud account workspace did not render: ${state}`);
     }
     await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="稍后配置"]')?.click()`);
-    await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="设置"]')?.click()`);
+    await window.webContents.executeJavaScript(`document.querySelector('.sidebar-settings')?.click()`);
+    await window.webContents.executeJavaScript(`
+      [...document.querySelectorAll('.settings-nav button')].find((button) => button.textContent?.includes('账户与同步'))?.click()
+    `);
     if (!await waitForSelector(window, "#cloud-session-title", 10000)) throw new Error("Cloud session management did not render");
-    await capture(window, "forge-cloud-account-security-1440.png");
+    await capture(window, "forge-cloud-account-security-1600.png");
   }
 
   for (const openWindow of windows) openWindow.destroy();

@@ -8,7 +8,7 @@ import type {
   Activity, ApprovalRequest, BootstrapPayload, CloudMcpCatalogMetadata, CloudSkillCatalogMetadata,
   CloudTaskMetadata, EncryptedTaskBackupEnvelope, ExtensionPayload, ExtensionSyncSnapshot, ForgeIdentityContext, ForgeTask, MarketplacePayload,
   McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo,
-  SkillScope, TaskStreamEvent, WorkspaceFileInfo,
+  SkillScope, TaskStreamEvent, WorkspaceFileInfo, WorkspacePreferences,
 } from "@forge/contracts";
 import { applyTaskChanges, type ChangeAction } from "./change-manager.js";
 import { CodexBridge, type RpcMessage } from "./codex-bridge.js";
@@ -132,7 +132,7 @@ async function loadedDeepSeekThread(task: ForgeTask) {
     model: deepSeek.model,
     modelProvider: "deepseek",
     cwd: taskWorkspacePath,
-    approvalPolicy: "untrusted",
+    approvalPolicy: store.preferences().approvalPolicy,
     approvalsReviewer: "user",
     sandbox: "workspace-write",
     excludeTurns: true,
@@ -239,6 +239,7 @@ async function bootstrapPayload(): Promise<BootstrapPayload> {
   return {
     identity: store.identityContext(),
     workspace: { name: path.basename(workspacePath), branch: git.branch, path: workspacePath },
+    preferences: store.preferences(),
     git,
     runtime: runtimeStatus(),
     tasks: store.list(workspacePath),
@@ -671,7 +672,7 @@ async function runDeepSeekTurn(
         model: deepSeek.model,
         modelProvider: "deepseek",
         cwd: taskWorkspacePath,
-        approvalPolicy: "untrusted",
+        approvalPolicy: store.preferences().approvalPolicy,
         approvalsReviewer: "user",
         sandbox: "workspace-write",
         excludeTurns: true,
@@ -683,7 +684,7 @@ async function runDeepSeekTurn(
         modelProvider: "deepseek",
         allowProviderModelFallback: false,
         cwd: taskWorkspacePath,
-        approvalPolicy: "untrusted",
+        approvalPolicy: store.preferences().approvalPolicy,
         approvalsReviewer: "user",
         sandbox: "workspace-write",
         ephemeral: false,
@@ -725,7 +726,7 @@ async function runDeepSeekTurn(
         threadId,
         input: [{ type: "text", text, text_elements: [] }],
         cwd: taskWorkspacePath,
-        approvalPolicy: "untrusted",
+        approvalPolicy: store.preferences().approvalPolicy,
         approvalsReviewer: "user",
       }) as AppServerTurnStart;
     }
@@ -819,6 +820,15 @@ app.post<{ Body: { path?: string } }>("/api/workspace", async (request, reply) =
   terminals.setWorkspaceRoot(resolved);
   await applySkillRoots().catch(() => undefined);
   return bootstrapPayload();
+});
+
+app.patch<{ Body: Partial<WorkspacePreferences> }>("/api/preferences", async (request, reply) => {
+  if (runningTurns.size) return reply.code(409).send({ message: "请先停止正在运行的任务，再修改工作区默认配置" });
+  try {
+    return await store.updatePreferences(request.body || {});
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get<{ Querystring: { query?: string } }>("/api/workspace/files", async (request, reply) => {

@@ -46,8 +46,8 @@ pnpm cloud:preflight
 通过后构建和启动：
 
 ```powershell
-docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.20.0 .
-docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.20.0
+docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.21.0 .
+docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.21.0
 ```
 
 容器以非 root 用户运行，`/v1/live` 只检查进程存活，`/v1/health` 检查 Cloud API 和数据库就绪状态；每个响应都包含 `x-request-id`。生产日志会隐藏 Cookie、Authorization 和 Set-Cookie。启动时迁移进程会取得 MySQL 命名锁，并只执行尚未登记的迁移，避免多实例重复迁移。MySQL 没有原生 Row-Level Security，因此运行账号不得拥有 DDL 权限，Cloud API 的所有租户资源操作必须同时通过活动成员校验和显式 `tenant_id` 条件。

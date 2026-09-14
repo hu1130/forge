@@ -4,7 +4,7 @@ import {
   FileCode2, FileDiff, Folder, GitBranch, LoaderCircle, MoreHorizontal, Paperclip, PanelRightClose,
   Inbox, LogOut, Pin, PlugZap, Plus, Redo2, Search, Settings, Sparkles, TerminalSquare, Undo2, UserRound, X,
 } from "lucide-react";
-import type { Activity, ApprovalRequest, BootstrapPayload, CloudAuthSession, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo } from "@forge/contracts";
+import type { Activity, ApprovalRequest, BootstrapPayload, CloudAuthSession, ForgeInspectorTab, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo, WorkspacePreferences } from "@forge/contracts";
 import CloudAuthGate from "./CloudAuthGate";
 import ContextFilePicker from "./ContextFilePicker";
 import OnboardingDialog from "./OnboardingDialog";
@@ -25,6 +25,24 @@ function StatusDot({ status }: { status: RuntimeStatus["appServer"] }) {
 }
 
 type MessageActivity = Extract<Activity, { kind: "message" }>;
+
+export interface AppearancePreferences {
+  density: "comfortable" | "compact";
+  reduceMotion: boolean;
+}
+
+function storedAppearance(): AppearancePreferences {
+  if (typeof window === "undefined") return { density: "comfortable", reduceMotion: false };
+  try {
+    const value = JSON.parse(window.localStorage.getItem("forge:appearance:v1") || "{}") as Partial<AppearancePreferences>;
+    return {
+      density: value.density === "compact" ? "compact" : "comfortable",
+      reduceMotion: Boolean(value.reduceMotion),
+    };
+  } catch {
+    return { density: "comfortable", reduceMotion: false };
+  }
+}
 
 interface ActivityTurn {
   id: string;
@@ -262,14 +280,13 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [providerId, setProviderId] = useState("");
   const [providerOpen, setProviderOpen] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<"changes" | "git" | "terminal">("changes");
+  const [inspectorTab, setInspectorTab] = useState<ForgeInspectorTab>("changes");
   const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 1180);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [taskMenuOpen, setTaskMenuOpen] = useState(false);
@@ -289,12 +306,14 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
   const [followUpBusy, setFollowUpBusy] = useState(false);
   const [queueBusy, setQueueBusy] = useState("");
   const [cloudLogoutBusy, setCloudLogoutBusy] = useState(false);
+  const [appearance, setAppearance] = useState<AppearancePreferences>(storedAppearance);
   const feedRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const settingsDialogRef = useRef<HTMLElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const paperclipRef = useRef<HTMLButtonElement>(null);
+  const preferencesInitialized = useRef(false);
 
   const refresh = async () => {
     const response = await fetch("/api/bootstrap");
@@ -306,7 +325,19 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
     setBootstrap(payload);
     setApprovals(payload.approvals);
     setSelectedTaskId((current) => payload.tasks.some((task) => task.id === current) ? current : payload.tasks.find((task) => !task.archived)?.id || "");
-    setProviderId((current) => current || (payload.providers.find((provider) => provider.id === "deepseek" && provider.configured)?.id ?? "demo"));
+    if (!preferencesInitialized.current) {
+      const preferredProvider = payload.providers.find((provider) => provider.id === payload.preferences.defaultProviderId && provider.configured)?.id
+        ?? payload.providers.find((provider) => provider.id === "deepseek" && provider.configured)?.id
+        ?? "demo";
+      setProviderId(preferredProvider);
+      const storedInspector = payload.preferences.rememberInspectorTab
+        ? window.localStorage.getItem(`forge:inspector-tab:${payload.workspace.path}`)
+        : null;
+      setInspectorTab(storedInspector === "changes" || storedInspector === "git" || storedInspector === "terminal"
+        ? storedInspector
+        : payload.preferences.defaultInspectorTab);
+      preferencesInitialized.current = true;
+    }
     const deepSeekConfigured = payload.providers.some((provider) => provider.id === "deepseek" && provider.configured);
     if (deepSeekConfigured) setOnboardingOpen(false);
     else if (window.localStorage.getItem("forge:onboarding-dismissed:v1") !== "1") setOnboardingOpen(true);
@@ -321,6 +352,17 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
     }, 4000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.density = appearance.density;
+    document.documentElement.dataset.reduceMotion = appearance.reduceMotion ? "true" : "false";
+    window.localStorage.setItem("forge:appearance:v1", JSON.stringify(appearance));
+  }, [appearance]);
+
+  useEffect(() => {
+    if (!bootstrap?.preferences.rememberInspectorTab) return;
+    window.localStorage.setItem(`forge:inspector-tab:${bootstrap.workspace.path}`, inspectorTab);
+  }, [bootstrap?.preferences.rememberInspectorTab, bootstrap?.workspace.path, inspectorTab]);
 
   const viewTasks = useMemo(() => (bootstrap?.tasks || []).filter((task) => Boolean(task.archived) === showArchived), [bootstrap?.tasks, showArchived]);
   const selectedTask = useMemo(() => viewTasks.find((task) => task.id === selectedTaskId) || viewTasks[0], [selectedTaskId, viewTasks]);
@@ -394,7 +436,6 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") {
         event.preventDefault();
-        setSearchOpen(true);
         window.setTimeout(() => searchRef.current?.focus(), 0);
       }
     };
@@ -442,6 +483,20 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
     setContextPickerOpen(false);
     setContextFiles([]);
     setError("");
+  };
+
+  const updatePreferences = async (patch: Partial<WorkspacePreferences>) => {
+    const response = await fetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const payload = await response.json() as WorkspacePreferences & { message?: string };
+    if (!response.ok) throw new Error(payload.message || "偏好设置保存失败");
+    setBootstrap((current) => current ? { ...current, preferences: payload } : current);
+    if (patch.defaultProviderId && bootstrap?.providers.some((provider) => provider.id === patch.defaultProviderId && provider.configured)) {
+      setProviderId(patch.defaultProviderId);
+    }
   };
 
   const updateSelectedTask = async (patch: { title?: string; pinned?: boolean; archived?: boolean }) => {
@@ -838,27 +893,7 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
 
   return (
     <div className={`app-shell ${inspectorOpen ? "" : "inspector-closed"}`}>
-      <header className="topbar">
-        <button className="workspace-crumb" type="button" onClick={() => void chooseWorkspace()} title={bootstrap.workspace.path}><span>{bootstrap.workspace.name}</span><span>/</span><GitBranch size={14} /><span>{bootstrap.workspace.branch}</span><ChevronDown size={14} /></button>
-        <div className="topbar-spacer" />
-        <div className="provider-wrap">
-          <button className="top-button provider-button" aria-expanded={providerOpen} onClick={() => setProviderOpen((open) => !open)}>
-            <span>{selectedProvider?.label}</span><i>·</i><span>{selectedProvider?.model}</span><ChevronDown size={14} />
-          </button>
-          {providerOpen && <div className="provider-menu">
-            {bootstrap.providers.map((provider: ProviderOption) => (
-              <button key={provider.id} onClick={() => { setProviderId(provider.id); setProviderOpen(false); }}>
-                <span><strong>{provider.label}</strong><small>{provider.model}</small></span>
-                <em className={provider.configured ? "configured" : ""}>{provider.mode === "demo" ? "演示" : provider.configured ? "已配置" : "未配置"}</em>
-              </button>
-            ))}
-            <p>不会在模型之间自动降级</p>
-          </div>}
-        </div>
-        <button className="search-button" type="button" onClick={() => { setSearchOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0); }}><Search size={15} /><span>搜索</span><kbd>Ctrl K</kbd></button>
-        <button className="icon-button" aria-label="设置" onClick={() => setSettingsOpen(true)}><Settings size={17} /></button>
-        <button className="icon-button inspector-toggle" aria-label="切换检查器" onClick={() => setInspectorOpen((open) => !open)}><PanelRightClose size={17} /></button>
-      </header>
+      <div className="window-drag-strip" aria-hidden="true" />
 
       <aside className="sidebar">
         <div className="sidebar-brand"><ForgeMark /><strong>Forge</strong></div>
@@ -873,7 +908,7 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
         </section>
         <section className="sidebar-section task-section">
           <div className="section-title"><span>{showArchived ? "已归档" : "最近任务"}</span><button className="archive-toggle" type="button" aria-label={showArchived ? "返回最近任务" : "查看已归档任务"} title={showArchived ? "返回最近任务" : "查看已归档任务"} onClick={() => chooseTaskView(!showArchived)}>{showArchived ? <Inbox size={14} /> : <Archive size={14} />}</button></div>
-          {searchOpen && <div className="task-search"><Search size={14} /><input ref={searchRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={showArchived ? "搜索已归档任务" : "搜索当前项目任务"} aria-label={showArchived ? "搜索已归档任务" : "搜索当前项目任务"} /><button type="button" aria-label="关闭搜索" onClick={() => { setSearchOpen(false); setSearchQuery(""); }}><X size={13} /></button></div>}
+          <div className="task-search"><Search size={14} /><input ref={searchRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={showArchived ? "搜索已归档任务" : "搜索任务"} aria-label={showArchived ? "搜索已归档任务" : "搜索当前项目任务"} />{searchQuery && <button type="button" aria-label="清除搜索" onClick={() => setSearchQuery("")}><X size={13} /></button>}<kbd>Ctrl K</kbd></div>
           <div className="task-list">
             {visibleTasks.map((task) => (
               <button key={task.id} className={`task-card ${task.id === selectedTask?.id ? "selected" : ""}`} onClick={() => setSelectedTaskId(task.id)}>
@@ -883,18 +918,19 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
             {!visibleTasks.length && <p className="task-empty">{searchQuery ? "没有匹配的任务" : showArchived ? "还没有归档任务" : cloudSession ? "这个租户还没有任务，本机免登录记录不会自动合并" : "还没有任务"}</p>}
           </div>
         </section>
-        {cloudSession && <button className="sidebar-account" type="button" aria-label={anyTaskRunning ? "请先停止正在运行的任务再退出账户" : `退出 ${cloudSession.user.displayName} 的账户`} title={anyTaskRunning ? "请先停止正在运行的任务再退出" : `${cloudSession.user.email} · ${cloudSession.tenant.name} · ${cloudSession.tenant.role}`} disabled={cloudLogoutBusy || anyTaskRunning} onClick={() => void logoutCloudAccount()}>
+        {cloudSession ? <button className="sidebar-account" type="button" aria-label={anyTaskRunning ? "请先停止正在运行的任务再退出账户" : `退出 ${cloudSession.user.displayName} 的账户`} title={anyTaskRunning ? "请先停止正在运行的任务再退出" : `${cloudSession.user.email} · ${cloudSession.tenant.name} · ${cloudSession.tenant.role}`} disabled={cloudLogoutBusy || anyTaskRunning} onClick={() => void logoutCloudAccount()}>
           <span>{cloudSession.user.displayName.slice(0, 1).toLocaleUpperCase()}</span>
           <span><strong>{cloudSession.user.displayName}</strong><small>{cloudSession.tenant.name} · 已隔离</small></span>
           <LogOut size={15} aria-hidden="true" />
-        </button>}
+        </button> : <button className="sidebar-account" type="button" onClick={() => setSettingsOpen(true)}><span>本</span><span><strong>本机用户</strong><small>数据保存在此设备</small></span><ChevronRight size={15} /></button>}
         <button className="sidebar-settings" onClick={() => setSettingsOpen(true)}><Settings size={17} />设置</button>
       </aside>
 
       <main className="workspace-main">
         <header className="task-header">
-          <div><h1>{selectedTask?.title || "新任务"}</h1><p>{selectedTask?.restoredFrom ? "云备份恢复记录" : selectedTask?.state === "running" ? "正在处理" : selectedTask?.state === "stopped" ? "已停止" : selectedTask?.state === "failed" ? "执行失败" : "本机任务"}<span>·</span>{selectedProvider?.mode === "demo" ? "显式演示流" : selectedProvider?.label}</p></div>
+          <div className="task-heading"><div className="task-workspace-line"><button type="button" onClick={() => void chooseWorkspace()} title={bootstrap.workspace.path}>{bootstrap.workspace.name}<ChevronRight size={12} />{bootstrap.workspace.branch}</button><span><StatusDot status={bootstrap.runtime.appServer} />本机运行</span></div><h1>{selectedTask?.title || "新任务"}</h1><p>{selectedTask?.restoredFrom ? "云备份恢复记录" : selectedTask?.state === "running" ? "正在处理" : selectedTask?.state === "stopped" ? "已停止" : selectedTask?.state === "failed" ? "执行失败" : "本机任务"}<span>·</span>{selectedProvider?.mode === "demo" ? "显式演示流" : selectedProvider?.label}</p></div>
           <div className="task-actions">
+            <button className="icon-button inspector-toggle" aria-label="切换检查器" onClick={() => setInspectorOpen((open) => !open)}><PanelRightClose size={17} /></button>
             <button className={`icon-button ${selectedTask?.pinned ? "active" : ""}`} type="button" aria-label={selectedTask?.pinned ? "取消置顶任务" : "置顶任务"} disabled={!selectedTask} onClick={() => selectedTask && void updateSelectedTask({ pinned: !selectedTask.pinned })}><Pin size={16} /></button>
             <div className="task-menu-wrap">
               <button className="icon-button" type="button" aria-label="任务操作" aria-expanded={taskMenuOpen} disabled={!selectedTask} onClick={() => setTaskMenuOpen((open) => !open)}><MoreHorizontal size={17} /></button>
@@ -937,8 +973,15 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
             <div className="composer-actions">
               <button ref={paperclipRef} className={`composer-icon ${contextPickerOpen ? "active" : ""}`} type="button" aria-label="添加工作区上下文文件" aria-expanded={contextPickerOpen} aria-controls="context-file-picker" disabled={showArchived || followUpBusy} onClick={() => setContextPickerOpen((open) => !open)}><Paperclip size={18} /></button>
               <button className="context-chip" type="button" title={bootstrap.workspace.path}><FileCode2 size={15} />当前工作区</button>
+              <div className="composer-provider-wrap">
+                <button className="composer-model" type="button" aria-expanded={providerOpen} onClick={() => setProviderOpen((open) => !open)}><span>{selectedProvider?.label}</span><small>{selectedProvider?.model}</small><ChevronDown size={13} /></button>
+                {providerOpen && <div className="provider-menu composer-provider-menu">
+                  {bootstrap.providers.map((provider: ProviderOption) => <button key={provider.id} disabled={!provider.configured} onClick={() => { setProviderId(provider.id); setProviderOpen(false); }}><span><strong>{provider.label}</strong><small>{provider.model}</small></span><em className={provider.configured ? "configured" : ""}>{provider.mode === "demo" ? "演示" : provider.configured ? "已配置" : "未配置"}</em></button>)}
+                  <p>选择是显式的，不会自动降级</p>
+                </div>}
+              </div>
               <span className="composer-spacer" />
-              <span className="approval-mode">按需批准</span>
+              <button className="approval-mode" type="button" title="在设置中修改审批策略" onClick={() => setSettingsOpen(true)}>{bootstrap.preferences.approvalPolicy === "untrusted" ? "严格审批" : "按需审批"}</button>
               {taskRunning && <label className="running-input-mode"><span className="sr-only">运行中输入方式</span><select value={runningInputMode} disabled={followUpBusy} onChange={(event) => setRunningInputMode(event.target.value as "steer" | "queue")}><option value="steer">补充当前任务</option><option value="queue">排到下一轮</option></select></label>}
               {taskRunning ? <>
                 <button className="send-button" onClick={sendTurn} disabled={showArchived || followUpBusy || !draft.trim()} aria-label={runningInputMode === "steer" ? "补充当前任务" : "加入下一轮队列"}>{followUpBusy ? <LoaderCircle className="spin" size={16} /> : <ArrowUp size={18} />}</button>
@@ -977,6 +1020,10 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
         providers={bootstrap.providers}
         runtime={bootstrap.runtime}
         workspacePath={bootstrap.workspace.path}
+        workspaceName={bootstrap.workspace.name}
+        preferences={bootstrap.preferences}
+        appearance={appearance}
+        anyTaskRunning={anyTaskRunning}
         apiKeyDraft={apiKeyDraft}
         apiKeySaving={apiKeySaving}
         apiKeyTesting={apiKeyTesting}
@@ -988,6 +1035,8 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
         onTestApiKey={() => void testDeepSeekApiKey()}
         onSaveApiKey={() => void saveDeepSeekApiKey()}
         onChooseWorkspace={() => void chooseWorkspace()}
+        onPreferencesChange={updatePreferences}
+        onAppearanceChange={(patch) => setAppearance((current) => ({ ...current, ...patch }))}
         onClose={() => setSettingsOpen(false)}
       />}
       {onboardingOpen && <OnboardingDialog

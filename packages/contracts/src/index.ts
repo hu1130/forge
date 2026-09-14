@@ -152,6 +152,16 @@ export interface TaskBackupRestoreResult {
   tasks: ForgeTask[];
 }
 
+export type ForgeApprovalPolicy = "untrusted" | "on-request";
+export type ForgeInspectorTab = "changes" | "terminal" | "git";
+
+export interface WorkspacePreferences {
+  defaultProviderId: "demo" | "deepseek";
+  approvalPolicy: ForgeApprovalPolicy;
+  rememberInspectorTab: boolean;
+  defaultInspectorTab: ForgeInspectorTab;
+}
+
 export interface CloudTaskMetadata {
   title: string;
   pinned: boolean;
@@ -475,6 +485,7 @@ export type TerminalStreamEvent =
 export interface BootstrapPayload {
   identity: ForgeIdentityContext;
   workspace: { name: string; branch: string; path: string };
+  preferences: WorkspacePreferences;
   git: GitStatus;
   runtime: RuntimeStatus;
   tasks: ForgeTask[];

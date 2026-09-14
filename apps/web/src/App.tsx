@@ -7,9 +7,12 @@ import {
 import type { Activity, ApprovalRequest, BootstrapPayload, CloudAuthSession, ForgeInspectorTab, ForgeTask, GitStatus, ProviderOption, QueuedTurn, RuntimeStatus, TaskStreamEvent, WorkspaceFileInfo, WorkspacePreferences } from "@forge/contracts";
 import CloudAuthGate from "./CloudAuthGate";
 import ContextFilePicker from "./ContextFilePicker";
+import LegalConsentDialog from "./LegalConsentDialog";
+import { DEVELOPMENT_LEGAL_VERSION } from "./LegalDocuments";
 import OnboardingDialog from "./OnboardingDialog";
 import SettingsModal from "./SettingsModal";
 import TurnQueue from "./TurnQueue";
+import type { ForgeReleaseInfo } from "./desktop";
 
 const TerminalPanel = lazy(() => import("./TerminalPanel"));
 const GitPanel = lazy(() => import("./GitPanel"));
@@ -275,7 +278,7 @@ function parseSseChunk(buffer: string) {
 
 type AuthenticatedCloudSession = Extract<CloudAuthSession, { authenticated: true }>;
 
-function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSession?: AuthenticatedCloudSession; cloudApiBase: string; onCloudLogout: () => Promise<void> }) {
+function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout, releaseInfo }: { cloudSession?: AuthenticatedCloudSession; cloudApiBase: string; onCloudLogout: () => Promise<void>; releaseInfo: ForgeReleaseInfo }) {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [providerId, setProviderId] = useState("");
@@ -1023,6 +1026,7 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
         workspaceName={bootstrap.workspace.name}
         preferences={bootstrap.preferences}
         appearance={appearance}
+        releaseInfo={releaseInfo}
         anyTaskRunning={anyTaskRunning}
         apiKeyDraft={apiKeyDraft}
         apiKeySaving={apiKeySaving}
@@ -1058,5 +1062,47 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
 }
 
 export function App() {
-  return <CloudAuthGate>{({ session, cloudApiBase, logout }) => <WorkspaceApp cloudSession={session} cloudApiBase={cloudApiBase} onCloudLogout={logout} />}</CloudAuthGate>;
+  const browserReleaseInfo = (): ForgeReleaseInfo => ({
+    version: "开发模式",
+    legalVersion: DEVELOPMENT_LEGAL_VERSION,
+    publisherName: "",
+    privacyContact: "",
+    supportUrl: "",
+    updateConfigured: false,
+    legalAccepted: window.localStorage.getItem(`forge:legal-consent:${DEVELOPMENT_LEGAL_VERSION}`) === "1",
+  });
+  const [releaseInfo, setReleaseInfo] = useState<ForgeReleaseInfo | null>(() => window.forgeDesktop ? null : browserReleaseInfo());
+  const [releaseError, setReleaseError] = useState("");
+
+  const loadReleaseInfo = async () => {
+    setReleaseError("");
+    try {
+      if (!window.forgeDesktop?.getReleaseInfo) {
+        setReleaseInfo(browserReleaseInfo());
+        return;
+      }
+      setReleaseInfo(await window.forgeDesktop.getReleaseInfo());
+    } catch (reason) {
+      setReleaseError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  useEffect(() => { void loadReleaseInfo(); }, []);
+
+  const acceptLegalTerms = async () => {
+    if (!releaseInfo) return;
+    if (window.forgeDesktop?.acceptLegalTerms) {
+      setReleaseInfo(await window.forgeDesktop.acceptLegalTerms(releaseInfo.legalVersion));
+      return;
+    }
+    window.localStorage.setItem(`forge:legal-consent:${releaseInfo.legalVersion}`, "1");
+    setReleaseInfo({ ...releaseInfo, legalAccepted: true });
+  };
+
+  if (!releaseInfo) return <main className="loading-screen"><ForgeMark />{releaseError ? <><h1>无法读取发行信息</h1><p>{releaseError}</p><button type="button" onClick={() => void loadReleaseInfo()}>重试</button></> : <><LoaderCircle className="spin" /><p>正在读取发行信息…</p></>}</main>;
+
+  return <>
+    <CloudAuthGate>{({ session, cloudApiBase, logout }) => <WorkspaceApp cloudSession={session} cloudApiBase={cloudApiBase} onCloudLogout={logout} releaseInfo={releaseInfo} />}</CloudAuthGate>
+    {!releaseInfo.legalAccepted && <LegalConsentDialog releaseInfo={releaseInfo} onAccept={acceptLegalTerms} />}
+  </>;
 }

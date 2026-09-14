@@ -2,22 +2,65 @@ const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = req
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { createReleaseLogger, redactText } = require("./release-support.cjs");
+const { createReleaseLogger, parseUpdateManifest, redactText, trustedReleaseUrl } = require("./release-support.cjs");
+const releaseProfile = require("./release-profile.json");
 
+const smokeTest = process.env.FORGE_SMOKE_TEST === "1";
 app.setName("Forge");
+if (smokeTest && process.env.FORGE_SMOKE_USER_DATA_DIR) {
+  app.setPath("userData", path.resolve(process.env.FORGE_SMOKE_USER_DATA_DIR));
+}
 app.setAppUserModelId("com.forge.local");
 
-const webUrl = process.env.FORGE_WEB_URL || (app.isPackaged ? "http://127.0.0.1:4782" : "http://127.0.0.1:5173");
+let daemonPort = 4782;
+let webUrl = process.env.FORGE_WEB_URL || (app.isPackaged ? `http://127.0.0.1:${daemonPort}` : "http://127.0.0.1:5173");
 const cloudApiUrl = (process.env.FORGE_CLOUD_API_URL?.trim() || "").replace(/\/$/, "");
-const smokeTest = process.env.FORGE_SMOKE_TEST === "1";
+const updateManifestUrl = process.env.FORGE_UPDATE_MANIFEST_URL?.trim() || String(releaseProfile.updateManifestUrl || "").trim();
 const apiToken = process.env.FORGE_API_TOKEN?.trim() || randomBytes(32).toString("base64url");
 const localIdentity = { tenantId: "local", userId: "local", mode: "local" };
 let activeIdentity = localIdentity;
 let daemonProcess = null;
 let daemonFailure = "";
 let lifecycleLogger = null;
+let availableUpdateUrl = "";
+
+function requestedDaemonPort() {
+  const configured = process.env.FORGE_PORT?.trim();
+  if (!configured) return { port: 4782, explicit: false };
+  const port = Number(configured);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("FORGE_PORT 必须是 1024 到 65535 之间的整数");
+  return { port, explicit: true };
+}
+
+function probeLocalPort(port) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      const address = server.address();
+      const selected = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(selected));
+    });
+  });
+}
+
+async function selectDaemonPort() {
+  const requested = requestedDaemonPort();
+  try {
+    return await probeLocalPort(requested.port);
+  } catch (error) {
+    if (requested.explicit || error?.code !== "EADDRINUSE") throw error;
+    return probeLocalPort(0);
+  }
+}
+
+function daemonUrl(pathname) {
+  return `http://127.0.0.1:${daemonPort}${pathname}`;
+}
 
 function logLifecycle(event, details = {}) {
   try { lifecycleLogger?.write(event, details); } catch { /* Logging must never prevent Forge from opening. */ }
@@ -38,6 +81,81 @@ function readSecureConfig() {
   } catch {
     return { version: 1 };
   }
+}
+
+function writeSecureConfig(config) {
+  const filePath = secureConfigPath();
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.tmp`;
+  writeFileSync(temporary, JSON.stringify(config), { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, filePath);
+}
+
+function releaseInfo() {
+  const consent = readSecureConfig().legalConsent;
+  return {
+    version: app.getVersion(),
+    legalVersion: releaseProfile.legalVersion,
+    publisherName: releaseProfile.publisherName,
+    privacyContact: releaseProfile.privacyContact,
+    supportUrl: releaseProfile.supportUrl,
+    updateConfigured: Boolean(updateManifestUrl),
+    legalAccepted: consent?.version === releaseProfile.legalVersion,
+  };
+}
+
+function acceptLegalTerms(version) {
+  if (version !== releaseProfile.legalVersion) throw new Error("协议版本已经变化，请重新阅读后确认");
+  const config = readSecureConfig();
+  config.version = 1;
+  config.legalConsent = { version, acceptedAt: new Date().toISOString() };
+  writeSecureConfig(config);
+  logLifecycle("legal.accepted", { version });
+  return releaseInfo();
+}
+
+async function checkForUpdates() {
+  availableUpdateUrl = "";
+  if (!updateManifestUrl) return { status: "unconfigured", currentVersion: app.getVersion() };
+  const manifestTarget = trustedReleaseUrl(updateManifestUrl, "更新清单地址");
+  let response;
+  try {
+    response = await fetch(manifestTarget, { redirect: "error", signal: AbortSignal.timeout(12_000) });
+  } catch (error) {
+    if (error?.name === "TimeoutError") throw new Error("检查更新超时，请稍后重试");
+    throw new Error("无法连接更新服务，请检查网络后重试");
+  }
+  if (!response.ok) throw new Error(`更新服务返回 HTTP ${response.status}`);
+  const text = await response.text();
+  const manifest = parseUpdateManifest(text, app.getVersion());
+  if (!manifest.available) {
+    logLifecycle("update.up-to-date", { checkedVersion: manifest.version });
+    return { status: "upToDate", currentVersion: app.getVersion(), checkedVersion: manifest.version };
+  }
+  availableUpdateUrl = manifest.downloadUrl;
+  logLifecycle("update.available", { version: manifest.version });
+  return {
+    status: "available",
+    currentVersion: app.getVersion(),
+    version: manifest.version,
+    sha256: manifest.sha256.toUpperCase(),
+    releaseNotes: manifest.releaseNotes,
+  };
+}
+
+async function openAvailableUpdate() {
+  if (!availableUpdateUrl) throw new Error("请先检查更新并确认有可用版本");
+  await shell.openExternal(availableUpdateUrl);
+  logLifecycle("update.download-opened");
+  return { opened: true };
+}
+
+async function openThirdPartyLicenses() {
+  const directory = app.isPackaged ? path.join(process.resourcesPath, "licenses") : path.join(__dirname, "third-party");
+  if (!existsSync(directory)) throw new Error("第三方许可证目录不存在，请重新安装 Forge");
+  const message = await shell.openPath(directory);
+  if (message) throw new Error("无法打开第三方许可证目录");
+  return { opened: true };
 }
 
 function readDeepSeekApiKey() {
@@ -170,6 +288,7 @@ function startDaemon() {
     FORGE_WEB_ROOT: path.join(process.resourcesPath, "web"),
     FORGE_WORKSPACE: app.getPath("documents"),
     FORGE_CODEX_BIN: codex,
+    FORGE_PORT: String(daemonPort),
     FORGE_API_TOKEN: apiToken,
     FORGE_TENANT_ID: activeIdentity.mode === "cloud" ? activeIdentity.tenantId : "",
     FORGE_USER_ID: activeIdentity.mode === "cloud" ? activeIdentity.userId : "",
@@ -222,7 +341,7 @@ async function waitForDaemon(timeoutMs = 20_000) {
   while (Date.now() - startedAt < timeoutMs) {
     if (daemonFailure) throw new Error(daemonFailure);
     try {
-      const response = await fetch("http://127.0.0.1:4782/api/session", { headers: { authorization: `Bearer ${apiToken}` } });
+      const response = await fetch(daemonUrl("/api/session"), { headers: { authorization: `Bearer ${apiToken}` } });
       if (response.ok && (await response.json()).protected === true) {
         logLifecycle("daemon.ready", { startupMs: Date.now() - startedAt });
         return;
@@ -243,7 +362,7 @@ function redactDiagnosticText(value) {
 
 async function readDaemonDiagnostics() {
   try {
-    const response = await fetch("http://127.0.0.1:4782/api/health", {
+    const response = await fetch(daemonUrl("/api/health"), {
       headers: { authorization: `Bearer ${apiToken}` },
       signal: AbortSignal.timeout(4_000),
     });
@@ -398,6 +517,10 @@ function createWindow() {
 }
 
 async function initializeApp() {
+  if (app.isPackaged && !process.env.FORGE_WEB_URL) {
+    daemonPort = await selectDaemonPort();
+    webUrl = `http://127.0.0.1:${daemonPort}`;
+  }
   try {
     lifecycleLogger = createReleaseLogger({
       logDir: path.join(app.getPath("userData"), "logs"),
@@ -421,6 +544,26 @@ async function initializeApp() {
   ipcMain.handle("forge:deepseek-status", (event) => {
     assertTrustedSender(event);
     return { configured: Boolean(readDeepSeekApiKey()), encryptedStorage: safeStorage.isEncryptionAvailable() };
+  });
+  ipcMain.handle("forge:release-info", (event) => {
+    assertTrustedSender(event);
+    return releaseInfo();
+  });
+  ipcMain.handle("forge:accept-legal", (event, version) => {
+    assertTrustedSender(event);
+    return acceptLegalTerms(String(version || ""));
+  });
+  ipcMain.handle("forge:check-updates", async (event) => {
+    assertTrustedSender(event);
+    return checkForUpdates();
+  });
+  ipcMain.handle("forge:open-update", async (event) => {
+    assertTrustedSender(event);
+    return openAvailableUpdate();
+  });
+  ipcMain.handle("forge:open-licenses", async (event) => {
+    assertTrustedSender(event);
+    return openThirdPartyLicenses();
   });
   ipcMain.handle("forge:test-deepseek-key", async (event, value) => {
     assertTrustedSender(event);
@@ -492,7 +635,12 @@ if (!singleInstance) {
     if (window?.isMinimized()) window.restore();
     window?.focus();
   });
-  app.whenReady().then(initializeApp);
+  app.whenReady().then(initializeApp).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (smokeTest) console.error(`Forge desktop initialization failed: ${message}`);
+    else dialog.showErrorBox("Forge 启动失败", `${message}\n\n请重新启动 Forge；如果问题仍然存在，请联系软件提供者。`);
+    app.exit(1);
+  });
 }
 
 app.on("before-quit", () => {

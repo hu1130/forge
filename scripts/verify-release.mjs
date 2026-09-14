@@ -39,6 +39,7 @@ export function verifyRelease({ expectedVersion, commercial = false } = {}) {
   const rootPackage = packageJson("package.json");
   const version = expectedVersion || rootPackage.version;
   const desktopPackage = packageJson("apps/desktop/package.json");
+  const releaseProfile = packageJson("apps/desktop/release-profile.json");
   const results = [];
   const add = (level, label, detail) => results.push({ level, label, detail });
   const requireFile = (relativePath, minimumBytes = 1) => {
@@ -65,6 +66,19 @@ export function verifyRelease({ expectedVersion, commercial = false } = {}) {
 
   const desktopFiles = desktopPackage.build?.files || [];
   add(desktopFiles.includes("release-support.cjs") ? "pass" : "fail", "desktop support module", "release-support.cjs bundled");
+  add(desktopFiles.includes("release-profile.json") ? "pass" : "fail", "desktop release profile", "release-profile.json bundled");
+  for (const field of ["publisherName", "privacyContact", "supportUrl", "updateManifestUrl"]) {
+    const configured = typeof releaseProfile[field] === "string" && releaseProfile[field].trim().length > 0;
+    add(configured ? "pass" : commercial ? "fail" : "warn", `release profile ${field}`, configured ? "configured" : "not configured");
+  }
+  for (const field of ["supportUrl", "updateManifestUrl"]) {
+    if (releaseProfile[field]) {
+      let valid = false;
+      try { valid = new URL(releaseProfile[field]).protocol === "https:"; } catch { /* Invalid URL is reported below. */ }
+      add(valid ? "pass" : "fail", `release profile ${field} HTTPS`, releaseProfile[field]);
+    }
+  }
+  requireFile("scripts/verify-windows-upgrade.ps1", 1000);
   requireFile("apps/desktop/assets/forge-icon.ico", 1024);
 
   const installerRelativePath = `release/Forge-Setup-${version}.exe`;
@@ -81,7 +95,7 @@ export function verifyRelease({ expectedVersion, commercial = false } = {}) {
   const appArchivePath = path.join(repositoryRoot, "release/win-unpacked/resources/app.asar");
   if (existsSync(appArchivePath)) {
     const appArchive = readFileSync(appArchivePath);
-    for (const marker of ["main.cjs", "preload.cjs", "release-support.cjs"]) {
+  for (const marker of ["main.cjs", "preload.cjs", "release-support.cjs", "release-profile.json"]) {
       add(appArchive.includes(Buffer.from(marker)) ? "pass" : "fail", `app.asar contains ${marker}`, "embedded filename found");
     }
   }
@@ -101,8 +115,6 @@ export function verifyRelease({ expectedVersion, commercial = false } = {}) {
     }
   }
 
-  const publishConfigured = Boolean(desktopPackage.build?.publish);
-  add(publishConfigured ? "pass" : commercial ? "fail" : "warn", "automatic update publishing", publishConfigured ? "configured" : "not configured");
   return { commercial, results, version };
 }
 

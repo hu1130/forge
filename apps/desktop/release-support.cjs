@@ -41,6 +41,45 @@ function redactValue(value, options = {}, key = "") {
   return redactText(value, options);
 }
 
+function parseReleaseVersion(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value);
+  return match ? match.slice(1).map(Number) : null;
+}
+
+function isNewerRelease(candidate, current) {
+  const candidateParts = parseReleaseVersion(candidate);
+  const currentParts = parseReleaseVersion(current);
+  if (!candidateParts || !currentParts) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (candidateParts[index] !== currentParts[index]) return candidateParts[index] > currentParts[index];
+  }
+  return false;
+}
+
+function trustedReleaseUrl(value, label = "地址") {
+  let target;
+  try { target = new URL(value); } catch { throw new Error(`${label}无效`); }
+  const localHttp = target.protocol === "http:" && ["127.0.0.1", "localhost"].includes(target.hostname);
+  if (target.protocol !== "https:" && !localHttp) throw new Error(`${label}必须使用 HTTPS`);
+  return target;
+}
+
+function parseUpdateManifest(text, currentVersion) {
+  if (text.length > 64 * 1024) throw new Error("更新清单超过大小限制");
+  let manifest;
+  try { manifest = JSON.parse(text); } catch { throw new Error("更新清单不是有效 JSON"); }
+  if (!parseReleaseVersion(manifest?.version || "")) throw new Error("更新清单版本无效");
+  if (!/^[A-Fa-f0-9]{64}$/.test(manifest?.sha256 || "")) throw new Error("更新清单缺少有效的 SHA-256");
+  const downloadTarget = trustedReleaseUrl(manifest?.downloadUrl || "", "更新下载地址");
+  return {
+    available: isNewerRelease(manifest.version, currentVersion),
+    version: manifest.version,
+    downloadUrl: downloadTarget.href,
+    sha256: manifest.sha256.toUpperCase(),
+    releaseNotes: typeof manifest.releaseNotes === "string" ? manifest.releaseNotes.slice(0, 4000) : "",
+  };
+}
+
 function createReleaseLogger({ logDir, homePath = "", maxBytes = DEFAULT_MAX_BYTES } = {}) {
   if (!logDir) throw new Error("logDir is required");
   mkdirSync(logDir, { recursive: true });
@@ -77,4 +116,4 @@ function createReleaseLogger({ logDir, homePath = "", maxBytes = DEFAULT_MAX_BYT
   return { logPath, previousLogPath, recent, write };
 }
 
-module.exports = { createReleaseLogger, redactText, redactValue };
+module.exports = { createReleaseLogger, isNewerRelease, parseReleaseVersion, parseUpdateManifest, redactText, redactValue, trustedReleaseUrl };

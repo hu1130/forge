@@ -1,6 +1,6 @@
 {
   "name": "local-codex-like",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -22,7 +22,8 @@
     "brand:assets": "pnpm --filter @forge/desktop exec electron ../../scripts/generate-brand-assets.cjs",
     "test:ui": "pnpm build && pnpm --filter @forge/desktop exec electron ../../scripts/smoke-web-ui.cjs",
     "release:verify": "node ./scripts/verify-release.mjs",
-    "release:verify:commercial": "node ./scripts/verify-release.mjs --commercial"
+    "release:verify:commercial": "node ./scripts/verify-release.mjs --commercial",
+    "release:test-upgrade": "pwsh -NoProfile -File ./scripts/verify-windows-upgrade.ps1"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import releaseSupport from "../apps/desktop/release-support.cjs";
 
-const { createReleaseLogger, redactText } = releaseSupport;
+const { createReleaseLogger, isNewerRelease, parseUpdateManifest, redactText, trustedReleaseUrl } = releaseSupport;
 
 test("release logger redacts secrets, identities, emails, and local paths", async (context) => {
   const logDir = await mkdtemp(path.join(os.tmpdir(), "forge-release-log-"));
@@ -41,4 +41,20 @@ test("release logger rotates bounded logs and reads recent structured entries", 
 test("diagnostic redaction also handles standalone sensitive text", () => {
   const result = redactText("api_key=secret123 password:open-sesame user@forge.example");
   assert.doesNotMatch(result, /secret123|open-sesame|user@forge\.example/);
+});
+
+test("release versions and update manifests reject unsafe downloads", () => {
+  assert.equal(isNewerRelease("0.23.0", "0.22.1"), true);
+  assert.equal(isNewerRelease("0.22.1", "0.22.1"), false);
+  assert.throws(() => trustedReleaseUrl("http://downloads.example.com/Forge.exe", "下载地址"), /HTTPS/);
+  assert.doesNotThrow(() => trustedReleaseUrl("http://127.0.0.1:8080/Forge.exe", "下载地址"));
+  assert.throws(() => parseUpdateManifest(JSON.stringify({ version: "0.23.0", downloadUrl: "https://example.com/Forge.exe", sha256: "bad" }), "0.22.1"), /SHA-256/);
+  const manifest = parseUpdateManifest(JSON.stringify({
+    version: "0.23.0",
+    downloadUrl: "https://downloads.example.com/Forge-Setup-0.23.0.exe",
+    sha256: "a".repeat(64),
+    releaseNotes: "商业版基础",
+  }), "0.22.1");
+  assert.equal(manifest.available, true);
+  assert.equal(manifest.sha256, "A".repeat(64));
 });

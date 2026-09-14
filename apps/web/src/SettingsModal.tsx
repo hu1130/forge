@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import {
   ArrowLeft, Box, Cable, Check, Cloud, Code2, Command, DatabaseBackup, Download, FolderCog, Gauge,
-  Home, LoaderCircle, Paintbrush, PlugZap, Plus, RefreshCw, ShieldCheck, SlidersHorizontal,
+  Home, Info, LoaderCircle, Paintbrush, PlugZap, Plus, RefreshCw, ShieldCheck, SlidersHorizontal,
   Sparkles, Store, Trash2, X,
 } from "lucide-react";
 import type {
@@ -12,8 +12,10 @@ import MarketplacePanel from "./MarketplacePanel";
 import CloudWorkspacePanel from "./CloudWorkspacePanel";
 import CloudBackupPanel from "./CloudBackupPanel";
 import type { AppearancePreferences } from "./App";
+import type { ForgeReleaseInfo } from "./desktop";
+import ReleaseSettings from "./ReleaseSettings";
 
-type SettingsTab = "overview" | "workspace" | "permissions" | "providers" | "marketplace" | "skills" | "mcp" | "appearance" | "runtime" | "account" | "backup";
+type SettingsTab = "overview" | "workspace" | "permissions" | "providers" | "marketplace" | "skills" | "mcp" | "appearance" | "runtime" | "about" | "account" | "backup";
 type AuthenticatedCloudSession = Extract<CloudAuthSession, { authenticated: true }>;
 
 interface SettingsModalProps {
@@ -25,6 +27,7 @@ interface SettingsModalProps {
   workspaceName: string;
   preferences: WorkspacePreferences;
   appearance: AppearancePreferences;
+  releaseInfo: ForgeReleaseInfo;
   anyTaskRunning: boolean;
   apiKeyDraft: string;
   apiKeySaving: boolean;
@@ -376,11 +379,12 @@ export default function SettingsModal(props: SettingsModalProps) {
         <button className={tab === "mcp" ? "active" : ""} onClick={() => setTab("mcp")}><PlugZap size={16} />MCP 服务</button>
         <p>系统</p>
         <button className={tab === "runtime" ? "active" : ""} onClick={() => setTab("runtime")}><Command size={16} />运行时</button>
+        <button className={tab === "about" ? "active" : ""} onClick={() => setTab("about")}><Info size={16} />关于 Forge</button>
         {props.cloudWorkspace && <><button className={tab === "account" ? "active" : ""} onClick={() => setTab("account")}><Cloud size={16} />账户与同步</button><button className={tab === "backup" ? "active" : ""} onClick={() => setTab("backup")}><DatabaseBackup size={16} />备份与恢复</button></>}
       </nav>
 
       <main className="settings-content">
-        <header className="settings-page-header"><div><span>Forge / 设置</span><h3>{({ overview: "概览", workspace: "偏好设置", permissions: "权限", providers: "模型提供商", marketplace: "扩展市场", skills: "Skills", mcp: "MCP 服务", appearance: "外观", runtime: "运行时", account: "账户与同步", backup: "备份与恢复" } satisfies Record<SettingsTab, string>)[tab]}</h3></div><button ref={props.closeButtonRef} className="icon-button" aria-label="关闭设置" onClick={props.onClose}><X size={18} /></button></header>
+        <header className="settings-page-header"><div><span>Forge / 设置</span><h3>{({ overview: "概览", workspace: "偏好设置", permissions: "权限", providers: "模型提供商", marketplace: "扩展市场", skills: "Skills", mcp: "MCP 服务", appearance: "外观", runtime: "运行时", about: "关于 Forge", account: "账户与同步", backup: "备份与恢复" } satisfies Record<SettingsTab, string>)[tab]}</h3></div><button ref={props.closeButtonRef} className="icon-button" aria-label="关闭设置" onClick={props.onClose}><X size={18} /></button></header>
         <div className="settings-page-body">
           {(extensionError || extensionMessage || preferenceError || preferenceMessage || diagnosticError || diagnosticMessage) && <div className={`settings-feedback ${extensionError || preferenceError || diagnosticError ? "feedback-error" : "feedback-success"}`} role={extensionError || preferenceError || diagnosticError ? "alert" : "status"}>{extensionError || preferenceError || diagnosticError || extensionMessage || preferenceMessage || diagnosticMessage}</div>}
 
@@ -453,6 +457,7 @@ export default function SettingsModal(props: SettingsModalProps) {
           </>}
 
           {tab === "runtime" && <><div className="settings-intro"><h4>本机运行时</h4><p>Forge 使用独立的 Codex 数据目录，不修改你已有的 Codex 配置。</p></div><div className="runtime-settings"><div><span>Daemon</span><StateBadge state="ok"><Check size={12} />已连接</StateBadge></div><div><span>App Server</span><StateBadge state={props.runtime.appServer === "ready" ? "ok" : "warning"}>{props.runtime.appServer === "ready" ? "已就绪" : props.runtime.appServer === "starting" ? "启动中" : "不可用"}</StateBadge></div><small>{props.runtime.detail}</small></div><section className="runtime-diagnostics" aria-labelledby="runtime-diagnostics-title"><div><h4 id="runtime-diagnostics-title">问题诊断</h4><p>导出版本、系统和运行状态，便于排查启动或连接问题。不会包含密钥、账户、工作区路径和对话内容。</p>{!window.forgeDesktop?.exportDiagnostics && <small>浏览器开发模式不可导出，请使用 Forge 桌面版。</small>}</div><button className="primary-small" type="button" disabled={diagnosticBusy || !window.forgeDesktop?.exportDiagnostics} onClick={() => void exportDiagnostics()}>{diagnosticBusy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}{diagnosticBusy ? "正在导出…" : "导出诊断信息"}</button></section></>}
+          {tab === "about" && <ReleaseSettings releaseInfo={props.releaseInfo} />}
         </div>
       </main>
     </section>

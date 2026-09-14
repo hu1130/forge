@@ -9,6 +9,7 @@ class QaAuthStore {
   memberships = new Map();
   sessions = new Map();
   actionTokens = new Map();
+  invitations = new Map();
 
   async createAccount(input) {
     if ([...this.users.values()].some((user) => user.email === input.email)) throw new DuplicateEmailError("该邮箱已经注册");
@@ -19,7 +20,7 @@ class QaAuthStore {
       passwordHash: input.passwordHash,
       emailVerifiedAt: input.emailVerifiedAt,
     });
-    this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
+    this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug, kind: "personal" });
     this.memberships.set(input.userId, { tenantId: input.tenantId, role: "owner", status: "active" });
   }
 
@@ -77,6 +78,38 @@ class QaAuthStore {
     }
     return revoked;
   }
+
+  async listTenants(userId) {
+    const membership = this.memberships.get(userId);
+    const tenant = membership?.status === "active" ? this.tenants.get(membership.tenantId) : undefined;
+    return tenant ? [{ ...tenant, role: membership.role }] : [];
+  }
+  async hasActiveMembership(userId, tenantId) {
+    const membership = this.memberships.get(userId);
+    return membership?.tenantId === tenantId && membership.status === "active";
+  }
+  async createTeam(input) {
+    const tenant = { id: input.tenantId, name: input.name, slug: input.slug, kind: "team" };
+    this.tenants.set(input.tenantId, tenant);
+    this.memberships.set(input.userId, { tenantId: input.tenantId, role: "owner", status: "active" });
+    return { ...tenant, role: "owner" };
+  }
+  async getTeamOverview(actor) {
+    const tenant = this.tenants.get(actor.tenantId);
+    const membership = this.memberships.get(actor.userId);
+    if (!tenant || tenant.kind !== "team" || membership?.tenantId !== tenant.id || membership.status !== "active") throw new Error("当前账户无权访问该团队");
+    const members = [...this.memberships.entries()].filter(([, item]) => item.tenantId === tenant.id && item.status === "active").map(([userId, item]) => {
+      const user = this.users.get(userId);
+      return { userId, email: user.email, displayName: user.displayName, role: item.role, joinedAt: new Date().toISOString() };
+    });
+    return { tenant: { ...tenant, role: membership.role }, members, invitations: [] };
+  }
+  async listPendingInvitations() { return []; }
+  async createInvitation() { throw new Error("QA fixture does not deliver invitations"); }
+  async acceptInvitation() { throw new Error("QA fixture has no pending invitation"); }
+  async revokeInvitation() { return false; }
+  async updateMemberRole() { return false; }
+  async removeMember() { return false; }
 }
 
 class QaTenantStore {
@@ -123,6 +156,7 @@ const tenantStore = new QaTenantStore();
 const app = await createCloudApi({
   store,
   tenantStore,
+  teamStore: store,
   allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"],
   cookieSecure: false,
 });

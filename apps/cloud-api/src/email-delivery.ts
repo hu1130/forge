@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export interface EmailDelivery {
   sendEmailVerification(email: string, verificationUrl: string): Promise<void>;
   sendPasswordReset(email: string, resetUrl: string): Promise<void>;
+  sendTenantInvitation(email: string, teamName: string, inviterName: string, invitationUrl: string): Promise<void>;
 }
 
 interface ResendEmailDeliveryOptions {
@@ -27,7 +28,7 @@ export class ResendEmailDelivery implements EmailDelivery {
         authorization: `Bearer ${this.options.apiKey}`,
         "content-type": "application/json",
         "idempotency-key": randomUUID(),
-        "user-agent": "Forge-Cloud/0.18.0",
+        "user-agent": "Forge-Cloud/0.19.0",
       },
       body: JSON.stringify({ from: this.options.from, to: [to], subject, text }),
       signal: AbortSignal.timeout(12_000),
@@ -42,6 +43,10 @@ export class ResendEmailDelivery implements EmailDelivery {
   async sendPasswordReset(email: string, resetUrl: string) {
     await this.send(email, "重置你的 Forge 密码", `请在 30 分钟内打开下面的链接设置新密码：\n\n${resetUrl}\n\n如果不是你发起的操作，可以忽略这封邮件。`);
   }
+
+  async sendTenantInvitation(email: string, teamName: string, inviterName: string, invitationUrl: string) {
+    await this.send(email, `加入 ${teamName}`, `${inviterName} 邀请你加入 Forge 团队“${teamName}”。请在 7 天内登录并接受邀请：\n\n${invitationUrl}\n\n只有与 ${email} 匹配且已验证的账户可以接受。`);
+  }
 }
 
 export class ConsoleEmailDelivery implements EmailDelivery {
@@ -51,5 +56,9 @@ export class ConsoleEmailDelivery implements EmailDelivery {
 
   async sendPasswordReset(email: string, resetUrl: string) {
     console.log(`[Forge Cloud development email] reset ${email}: ${resetUrl}`);
+  }
+
+  async sendTenantInvitation(email: string, teamName: string, inviterName: string, invitationUrl: string) {
+    console.log(`[Forge Cloud development email] invite ${email} to ${teamName} by ${inviterName}: ${invitationUrl}`);
   }
 }

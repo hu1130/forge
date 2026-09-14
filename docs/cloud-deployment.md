@@ -46,8 +46,8 @@ pnpm cloud:preflight
 通过后构建和启动：
 
 ```powershell
-docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.18.0 .
-docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.18.0
+docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.19.0 .
+docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.19.0
 ```
 
 容器以非 root 用户运行，`/v1/live` 只检查进程存活，`/v1/health` 检查 Cloud API 和数据库就绪状态；每个响应都包含 `x-request-id`。生产日志会隐藏 Cookie、Authorization 和 Set-Cookie。启动时迁移进程会取得 MySQL 命名锁，并只执行尚未登记的迁移，避免多实例重复迁移。MySQL 没有原生 Row-Level Security，因此运行账号不得拥有 DDL 权限，Cloud API 的所有租户资源操作必须同时通过活动成员校验和显式 `tenant_id` 条件。
@@ -65,5 +65,8 @@ docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.18.0
 5. 两个真实账户使用相同资源键时仍只能读取各自租户数据。
 6. 运行数据库账号执行 `ALTER TABLE` 会被拒绝。
 7. 桌面安装包通过 `FORGE_CLOUD_API_URL=https://...` 连接；非本机 HTTP 地址会被拒绝。
+8. 创建团队后可在个人与团队工作区之间切换，且本机 Daemon 身份与 Cloud 会话租户一致。
+9. 邀请只能由匹配且已验证的邮箱接受；管理员不能邀请管理员，最后一位所有者不能被降级或移除。
+10. 移除成员后，该成员在对应团队的旧会话立即失效，但个人工作区仍可正常登录。
 
 仓库中的 `compose.yaml` 只用于本机开发，包含明确标注的开发密码，不能直接部署到公网。

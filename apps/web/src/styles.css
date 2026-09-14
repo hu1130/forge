@@ -604,6 +604,45 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .cloud-identity-card strong { color: var(--ink); font-size: 13px; }
 .cloud-identity-card small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .cloud-identity-card em { color: #566078; font-style: normal; font-size: 10px; }
+.cloud-team-shell { display: grid; gap: 12px; padding: 14px; background: #fbfcff; border: 1px solid #dfe3ec; border-radius: 9px; }
+.cloud-team-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cloud-team-heading h3 { margin: 3px 0 0; font-size: 13px; }
+.cloud-team-heading .icon-button.compact { width: 30px; min-height: 30px; display: grid; place-items: center; padding: 0; color: #555b66; background: white; border: 1px solid var(--line-strong); border-radius: 7px; cursor: pointer; }
+.cloud-workspace-switcher, .cloud-create-team, .cloud-team-management, .cloud-pending-invitations { display: grid; gap: 7px; }
+.cloud-workspace-switcher > label, .cloud-create-team > label, .cloud-invite-form > label { display: flex; align-items: center; gap: 6px; color: #454b56; font-size: 10px; font-weight: 650; }
+.cloud-workspace-switcher > small { color: #96671d; font-size: 9px; line-height: 1.45; }
+.cloud-inline-form { display: flex; gap: 7px; }
+.cloud-inline-form input, .cloud-inline-form select, .cloud-member-actions select { min-width: 0; height: 34px; padding: 0 9px; color: var(--ink); background: white; border: 1px solid var(--line-strong); border-radius: 7px; outline: 0; font-size: 10px; }
+.cloud-inline-form input { flex: 1; }
+.cloud-inline-form select { flex: 1; }
+.cloud-inline-form input:focus-visible, .cloud-inline-form select:focus-visible, .cloud-member-actions select:focus-visible { border-color: #7993f7; box-shadow: 0 0 0 3px rgba(49,92,244,.1); }
+.cloud-inline-form button, .cloud-team-row > button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 11px; color: white; background: var(--blue); border: 1px solid var(--blue); border-radius: 7px; cursor: pointer; font-size: 10px; white-space: nowrap; }
+.cloud-team-shell button:disabled, .cloud-team-shell input:disabled, .cloud-team-shell select:disabled { opacity: .5; cursor: default; }
+.cloud-team-shell button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.cloud-pending-invitations { padding: 10px; background: #f2f5ff; border: 1px solid #d6defd; border-radius: 8px; }
+.cloud-pending-invitations > strong, .cloud-team-invites > strong { font-size: 10px; }
+.cloud-create-team { padding-top: 2px; }
+.cloud-team-management { padding-top: 12px; border-top: 1px solid var(--line); }
+.cloud-team-subheading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cloud-team-subheading > div { display: flex; align-items: center; gap: 6px; }
+.cloud-team-subheading strong { font-size: 11px; }
+.cloud-team-subheading span { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: #4e5c85; background: #e9edfb; border-radius: 9px; font-size: 9px; font-weight: 700; }
+.cloud-team-subheading small { color: var(--muted); font-size: 9px; text-align: right; }
+.cloud-invite-form { display: grid; gap: 6px; padding: 10px; background: white; border: 1px solid var(--line); border-radius: 8px; }
+.cloud-invite-fields input { flex: 1 1 210px; }
+.cloud-invite-fields select { flex: 0 0 90px; }
+.cloud-member-list, .cloud-team-invites { display: grid; }
+.cloud-team-invites { gap: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
+.cloud-team-row { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 46px; padding: 6px 0; }
+.cloud-team-row + .cloud-team-row { border-top: 1px solid #e7e9ee; }
+.cloud-team-avatar { width: 28px; height: 28px; display: grid; place-items: center; color: #56678e; background: #edf0f8; border-radius: 7px; }
+.cloud-team-row > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.cloud-team-row b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-team-row small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-role-pill { padding: 4px 7px; color: #51596c; background: #eef0f4; border-radius: 10px; font-size: 9px; }
+.cloud-member-actions { display: flex; align-items: center; gap: 5px; }
+.cloud-member-actions select { width: 78px; height: 30px; }
+.cloud-team-row > button.danger-icon, .cloud-member-actions .danger-icon { width: 30px; min-height: 30px; padding: 0; color: #a33d47; background: white; border-color: #e1c6ca; }
 .cloud-privacy-note { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; color: #285a40; background: #f1f9f4; border: 1px solid #c9e3d2; border-radius: 8px; }
 .cloud-privacy-note svg { flex: none; margin-top: 1px; }
 .cloud-privacy-note span { display: grid; gap: 3px; }
@@ -747,6 +786,12 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
   .approval-actions { grid-column: 1 / -1; justify-content: flex-end; }
 }
 @media (max-width: 620px) {
+  .modal-backdrop { left: 0; padding: 12px; }
+  .settings-modal, .settings-modal-extended { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px auto minmax(0, 1fr); border: 1px solid var(--line); border-radius: 10px; }
+  .settings-modal > header { grid-column: 1; grid-row: 1; }
+  .settings-nav { grid-row: 2; flex-direction: row; padding: 6px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .settings-nav button { width: auto; min-width: max-content; height: 34px; padding-inline: 9px; }
+  .settings-content { grid-column: 1; grid-row: 3; width: auto; padding: 15px; }
   .settings-modal-extended { width: calc(100vw - 24px); height: calc(100vh - 24px); grid-template-columns: minmax(0, 1fr); grid-template-rows: 66px auto minmax(0, 1fr); }
   .settings-modal > header { padding: 0 15px; }
   .settings-modal header p { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -956,4 +1001,19 @@ body { background: var(--canvas); font-size: 13px; }
   .onboarding-dialog { width: calc(100vw - 32px); max-height: calc(100vh - 32px); }
   .onboarding-key-form { grid-template-columns: minmax(0, 1fr); }
   .onboarding-key-actions { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+
+@media (max-width: 620px) {
+  .modal-backdrop { left: 0; padding: 12px; }
+  .settings-modal, .settings-modal-extended { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px auto minmax(0, 1fr); border: 1px solid var(--line); border-radius: 10px; }
+  .settings-modal > header { grid-column: 1; grid-row: 1; }
+  .settings-nav { grid-row: 2; flex-direction: row; padding: 6px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .settings-nav button { width: auto; min-width: max-content; height: 34px; padding-inline: 9px; }
+  .settings-content { grid-column: 1; grid-row: 3; width: auto; padding: 15px; }
+  .cloud-inline-form, .cloud-invite-fields { flex-wrap: wrap; }
+  .cloud-inline-form input, .cloud-inline-form select, .cloud-inline-form button { flex: 1 1 100%; }
+  .cloud-team-subheading { align-items: flex-start; flex-direction: column; }
+  .cloud-team-subheading small { text-align: left; }
+  .cloud-team-row { grid-template-columns: 30px minmax(0, 1fr); }
+  .cloud-team-row > button, .cloud-team-row > .cloud-member-actions, .cloud-team-row > .cloud-role-pill { grid-column: 2; justify-self: start; }
 }

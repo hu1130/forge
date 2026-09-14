@@ -2,14 +2,20 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyServerOptions } from "fastify";
-import type { CloudAuthSession, CloudSessionListPayload } from "@forge/contracts";
+import type {
+  CloudAuthSession, CloudPendingInvitationsPayload, CloudSessionListPayload, CloudTenantListPayload,
+} from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
 import type { EmailDelivery } from "./email-delivery.js";
 import { TenantAccessError, TenantVersionConflictError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
+import {
+  TeamAccessError, TeamConflictError, TeamNotFoundError, TeamService, type TeamStore,
+} from "./team-service.js";
 
 export interface CloudApiOptions {
   store: AuthStore;
   tenantStore?: TenantResourceStore;
+  teamStore?: TeamStore;
   allowedOrigins: string[];
   cookieSecure: boolean;
   cookieSameSite?: "lax" | "none";
@@ -79,11 +85,19 @@ export async function createCloudApi(options: CloudApiOptions) {
   const clearSessionCookie = (reply: FastifyReply) => {
     reply.clearCookie(sessionCookieName, { path: "/", httpOnly: true, secure: options.cookieSecure, sameSite: options.cookieSameSite || "lax" });
   };
-  const actionUrl = (parameter: "verify" | "reset", token: string) => {
+  const actionUrl = (parameter: "verify" | "reset" | "invite", token: string) => {
     if (!publicWebUrl) throw new Error("邮件服务尚未启用");
     const url = new URL(publicWebUrl);
     url.searchParams.set(parameter, token);
     return url.toString();
+  };
+  const team = options.teamStore ? new TeamService(options.teamStore) : undefined;
+  const teamError = (reply: FastifyReply, error: unknown, fallback: string) => {
+    if (error instanceof TeamAccessError) return reply.code(403).send({ message: error.message });
+    if (error instanceof TeamNotFoundError) return reply.code(404).send({ message: error.message });
+    if (error instanceof TeamConflictError) return reply.code(409).send({ message: error.message });
+    if (error instanceof Error && /团队名称|邀请|成员角色/.test(error.message)) return reply.code(400).send({ message: error.message });
+    return reply.code(500).send({ message: fallback });
   };
   const sendEmailVerification = async (userId: string) => {
     if (!options.emailDelivery) return;
@@ -246,6 +260,194 @@ export async function createCloudApi(options: CloudApiOptions) {
     }
     const revoked = await auth.revokeOtherSessions(session.user.id, session.tenant.id, session.sessionId);
     return { revoked };
+  });
+
+  app.get("/v1/tenants", async (request, reply): Promise<CloudTenantListPayload | FastifyReply> => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    return { tenants: await team.listTenants(session.user.id) };
+  });
+
+  app.post("/v1/tenants", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const body = bodyRecord(request.body);
+    try {
+      return reply.code(201).send(await team.createTeam(session.user.id, typeof body.name === "string" ? body.name : ""));
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法创建团队");
+    }
+  });
+
+  app.post("/v1/auth/tenant", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const currentToken = request.cookies[sessionCookieName];
+    const session = await auth.authenticate(currentToken);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const body = bodyRecord(request.body);
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+    if (!uuidPattern.test(tenantId)) return reply.code(400).send({ message: "工作区标识无效" });
+    if (tenantId === session.tenant.id) return session;
+    try {
+      await team.assertMembership(session.user.id, tenantId);
+      const result = await auth.switchTenant(session.user.id, tenantId, currentToken);
+      setSessionCookie(reply, result.token);
+      return result.session;
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法切换工作区");
+    }
+  });
+
+  app.get("/v1/invitations", async (request, reply): Promise<CloudPendingInvitationsPayload | FastifyReply> => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    return { invitations: await team.listMine(session.user.id, session.user.email) };
+  });
+
+  app.post("/v1/invitations/accept", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const body = bodyRecord(request.body);
+    const invitationId = typeof body.invitationId === "string" ? body.invitationId : undefined;
+    const inviteToken = typeof body.token === "string" ? body.token : undefined;
+    if (invitationId && !uuidPattern.test(invitationId)) return reply.code(400).send({ message: "邀请标识无效" });
+    if (inviteToken && !/^[A-Za-z0-9_-]{40,128}$/.test(inviteToken)) return reply.code(400).send({ message: "邀请标识无效" });
+    try {
+      return await team.accept(session.user.id, session.user.email, { invitationId, token: inviteToken });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法接受邀请");
+    }
+  });
+
+  app.get("/v1/team", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    try {
+      return await team.overview({ tenantId: session.tenant.id, userId: session.user.id });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法读取团队成员");
+    }
+  });
+
+  app.post("/v1/team/invitations", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const body = bodyRecord(request.body);
+    try {
+      const created = await team.invite(
+        { tenantId: session.tenant.id, userId: session.user.id },
+        typeof body.email === "string" ? body.email : "",
+        typeof body.role === "string" ? body.role : "",
+      );
+      let delivery: "sent" | "failed" | "unavailable" = "unavailable";
+      if (options.emailDelivery) {
+        try {
+          await options.emailDelivery.sendTenantInvitation(
+            created.invitation.email,
+            created.tenantName,
+            created.invitation.invitedByName,
+            actionUrl("invite", created.token),
+          );
+          delivery = "sent";
+        } catch (deliveryError) {
+          delivery = "failed";
+          request.log.error(deliveryError);
+        }
+      }
+      return reply.code(201).send({ invitation: created.invitation, delivery });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法发送邀请");
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/team/invitations/:id", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    if (!uuidPattern.test(request.params.id)) return reply.code(400).send({ message: "邀请标识无效" });
+    try {
+      const revoked = await team.revoke({ tenantId: session.tenant.id, userId: session.user.id }, request.params.id);
+      return revoked ? reply.code(204).send() : reply.code(404).send({ message: "邀请不存在" });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法撤销邀请");
+    }
+  });
+
+  app.patch<{ Params: { userId: string } }>("/v1/team/members/:userId", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    if (!uuidPattern.test(request.params.userId)) return reply.code(400).send({ message: "成员标识无效" });
+    const body = bodyRecord(request.body);
+    try {
+      const updated = await team.changeRole(
+        { tenantId: session.tenant.id, userId: session.user.id },
+        request.params.userId,
+        typeof body.role === "string" ? body.role : "",
+      );
+      return updated ? reply.code(204).send() : reply.code(404).send({ message: "成员不存在" });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法调整成员角色");
+    }
+  });
+
+  app.delete<{ Params: { userId: string } }>("/v1/team/members/:userId", async (request, reply) => {
+    if (!team) return reply.code(503).send({ message: "团队数据服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    if (!uuidPattern.test(request.params.userId)) return reply.code(400).send({ message: "成员标识无效" });
+    try {
+      const removed = await team.remove({ tenantId: session.tenant.id, userId: session.user.id }, request.params.userId);
+      return removed ? reply.code(204).send() : reply.code(404).send({ message: "成员不存在" });
+    } catch (error) {
+      request.log.error(error);
+      return teamError(reply, error, "暂时无法移除成员");
+    }
   });
 
   app.get<{ Querystring: { kind?: string } }>("/v1/tenant/resources", async (request, reply) => {

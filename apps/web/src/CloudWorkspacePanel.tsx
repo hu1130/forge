@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Check, Cloud, Download, LoaderCircle, MonitorSmartphone, PlugZap, RefreshCw, ShieldCheck, UploadCloud } from "lucide-react";
 import type {
-  CloudMcpCatalogMetadata, CloudSessionInfo, CloudSessionListPayload, CloudSkillCatalogMetadata, CloudTaskMetadata, CloudTenantResource,
+  CloudAuthSession, CloudMcpCatalogMetadata, CloudSessionInfo, CloudSessionListPayload, CloudSkillCatalogMetadata, CloudTaskMetadata, CloudTenantResource,
   CloudTenantResourcesPayload, ExtensionCatalogEntry, ExtensionCatalogMetadata, ExtensionSyncSnapshot,
   ForgeTask, LocalProfileImportResult, LocalProfileSummary, TaskSyncSnapshot,
 } from "@forge/contracts";
+import CloudTeamPanel from "./CloudTeamPanel";
 
-interface AuthenticatedSession {
-  sessionId: string;
-  user: { id: string; email: string; displayName: string; emailVerified: boolean };
-  tenant: { id: string; name: string; slug: string; role: "owner" | "admin" | "member" };
-  csrfToken: string;
-}
+type AuthenticatedSession = Extract<CloudAuthSession, { authenticated: true }>;
 
 interface TaskConflict {
   local: ForgeTask;
@@ -479,15 +475,17 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
   const disabled = Boolean(busy) || props.anyTaskRunning;
   return <div className="cloud-workspace-panel">
     <div className="settings-heading">
-      <div><h3>账户与云端目录</h3><p>管理当前个人租户的本机资料导入、任务目录和扩展目录同步。</p></div>
+      <div><h3>账户与云端目录</h3><p>切换个人或团队工作区，并管理隔离的云端目录。</p></div>
       <button type="button" disabled={Boolean(busy)} onClick={() => void loadOverview()}><RefreshCw className={busy === "loading" ? "spin" : ""} size={14} />刷新</button>
     </div>
 
     <div className="cloud-identity-card">
       <span><Cloud size={18} /></span>
-      <div><strong>{props.session.tenant.name}</strong><small>{props.session.user.email} · {props.session.tenant.role} · 已隔离</small></div>
+      <div><strong>{props.session.tenant.name}</strong><small>{props.session.user.email} · {{ owner: "所有者", admin: "管理员", member: "成员" }[props.session.tenant.role]} · 已隔离</small></div>
       <em>{cloudTaskCount} 个云端任务 · {cloudExtensionCount} 个云端扩展</em>
     </div>
+
+    <CloudTeamPanel session={props.session} cloudApiBase={props.cloudApiBase} anyTaskRunning={props.anyTaskRunning} />
 
     <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>只同步安全目录元数据</strong><small>任务目录和市场扩展的 ID、版本、作用域及启用状态可以进入 Cloud；代码、Skill 内容、MCP 命令、地址、参数、环境变量、Token 与本机路径不会上传。</small></span></div>
 

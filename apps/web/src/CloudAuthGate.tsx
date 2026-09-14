@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, ArrowRight, LoaderCircle, LockKeyhole, MailCheck, RotateCw, ShieldCheck } from "lucide-react";
+import { AlertCircle, ArrowRight, LoaderCircle, LockKeyhole, MailCheck, RotateCw, ShieldCheck, UsersRound } from "lucide-react";
 import type { CloudAuthSession } from "@forge/contracts";
 
 type AuthenticatedSession = Extract<CloudAuthSession, { authenticated: true }>;
@@ -32,6 +32,7 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
   const [session, setSession] = useState<CloudAuthSession | null>(base ? null : { authenticated: false });
   const [verificationToken] = useState(() => new URLSearchParams(window.location.search).get("verify") || "");
   const [resetToken] = useState(() => new URLSearchParams(window.location.search).get("reset") || "");
+  const [invitationToken, setInvitationToken] = useState(() => new URLSearchParams(window.location.search).get("invite") || "");
   const [mode, setMode] = useState<AuthMode>(resetToken ? "reset" : "login");
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -125,6 +126,62 @@ export default function CloudAuthGate({ children }: CloudAuthGateProps) {
       setPasswordConfirmation("");
       setNotice("");
     };
+    if (session.user.emailVerified && invitationToken) {
+      const dismissInvitation = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("invite");
+        window.history.replaceState(null, "", url);
+        setInvitationToken("");
+        setError("");
+      };
+      const acceptInvitation = async () => {
+        if (busy) return;
+        setBusy(true); setError("");
+        try {
+          const acceptedResponse = await authRequest(base, "/v1/invitations/accept", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken },
+            body: JSON.stringify({ token: invitationToken }),
+          });
+          const accepted = await acceptedResponse.json().catch(() => ({})) as { id?: string; message?: string };
+          if (!acceptedResponse.ok || !accepted.id) throw new Error(accepted.message || "接受团队邀请失败");
+          const switchResponse = await authRequest(base, "/v1/auth/tenant", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-csrf-token": session.csrfToken },
+            body: JSON.stringify({ tenantId: accepted.id }),
+          });
+          const switched = await switchResponse.json().catch(() => ({})) as CloudAuthSession & { message?: string };
+          if (!switchResponse.ok || !switched.authenticated) throw new Error(switched.message || "邀请已接受，但工作区切换失败");
+          await activateDesktopTenant(switched);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("invite");
+          window.history.replaceState(null, "", url);
+          setInvitationToken("");
+          setSession(switched);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+          setBusy(false);
+        }
+      };
+      return <main className="cloud-auth-shell">
+        <section className="cloud-auth-intro" aria-label="Forge Cloud 团队邀请">
+          <div className="cloud-auth-brand"><span className="cloud-auth-mark" aria-hidden="true" /><strong>Forge</strong></div>
+          <div><span className="cloud-auth-eyebrow">TEAM WORKSPACE</span><h1>加入团队，<br />共享云端工作目录。</h1><p>接受后会切换到团队租户；本机代码、终端和密钥仍不会上传。</p></div>
+          <ul><li><ShieldCheck size={17} /><span><strong>邮箱身份匹配</strong><small>只有收到邀请且已验证的邮箱可以加入</small></span></li><li><LockKeyhole size={17} /><span><strong>租户权限隔离</strong><small>团队数据不会与个人工作区混在一起</small></span></li></ul>
+        </section>
+        <section className="cloud-auth-panel" aria-labelledby="cloud-auth-title">
+          <div className="cloud-auth-card cloud-auth-verification">
+            <span className="cloud-auth-step">0.19 团队协作</span><UsersRound size={30} />
+            <h2 id="cloud-auth-title">接受团队邀请</h2>
+            <p>当前登录邮箱为 <strong>{session.user.email}</strong>。确认后，Forge 会进入邀请对应的团队工作区。</p>
+            {error && <div className="cloud-auth-error" role="alert"><AlertCircle size={15} /><span>{error}</span></div>}
+            <button className="cloud-auth-submit" type="button" aria-busy={busy} disabled={busy} onClick={() => void acceptInvitation()}>{busy ? <LoaderCircle className="spin" size={16} /> : <UsersRound size={16} />}接受并进入团队</button>
+            <button className="cloud-auth-secondary" type="button" disabled={busy} onClick={dismissInvitation}>暂不接受</button>
+          </div>
+        </section>
+      </main>;
+    }
     if (session.user.emailVerified) return children({ session, cloudApiBase: base, logout });
     const refreshVerification = async () => {
       if (busy) return;

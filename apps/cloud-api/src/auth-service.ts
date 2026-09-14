@@ -18,7 +18,7 @@ export interface StoredSession {
   createdAt: string;
   expiresAt: string;
   user: Omit<StoredUser, "passwordHash">;
-  tenant: { id: string; name: string; slug: string };
+  tenant: { id: string; name: string; slug: string; kind: "personal" | "team" };
   role: "owner" | "admin" | "member";
 }
 
@@ -161,6 +161,12 @@ export class AuthService {
 
   async logout(token: string | undefined) {
     if (token) await this.store.revokeSession(tokenHash(token));
+  }
+
+  async switchTenant(userId: string, tenantId: string, currentToken: string | undefined) {
+    const result = await this.issueSession(userId, tenantId);
+    if (currentToken) await this.store.revokeSession(tokenHash(currentToken));
+    return result;
   }
 
   private async issueActionToken(userId: string, purpose: AuthActionPurpose, durationMs: number) {

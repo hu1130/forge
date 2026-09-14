@@ -5,6 +5,7 @@ import { DuplicateEmailError } from "../apps/cloud-api/dist/auth-service.js";
 import { ResendEmailDelivery } from "../apps/cloud-api/dist/email-delivery.js";
 import { hashPassword, verifyPassword } from "../apps/cloud-api/dist/password.js";
 import { TenantVersionConflictError } from "../apps/cloud-api/dist/tenant-resources.js";
+import { TeamAccessError, TeamConflictError, TeamNotFoundError } from "../apps/cloud-api/dist/team-service.js";
 
 class MemoryAuthStore {
   users = new Map();
@@ -22,7 +23,7 @@ class MemoryAuthStore {
       passwordHash: input.passwordHash,
       emailVerifiedAt: input.emailVerifiedAt,
     });
-    this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug });
+    this.tenants.set(input.tenantId, { id: input.tenantId, name: input.tenantName, slug: input.tenantSlug, kind: "personal" });
     this.memberships.set(`${input.tenantId}:${input.userId}`, { tenantId: input.tenantId, userId: input.userId, role: "owner", status: "active" });
   }
 
@@ -127,7 +128,7 @@ class MemoryAuthStore {
   }
 }
 
-test("Resend delivery sends text email with bearer auth and idempotency", async () => {
+test("Resend delivery sends account and team invitation emails with bearer auth and idempotency", async () => {
   const previousFetch = globalThis.fetch;
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -147,6 +148,18 @@ test("Resend delivery sends text email with bearer auth and idempotency", async 
       subject: "验证你的 Forge 邮箱",
       text: "请在 24 小时内打开下面的链接完成邮箱验证：\n\nhttps://forge.example.test/?verify=test-token\n\n如果不是你创建的账户，可以忽略这封邮件。",
     });
+    await delivery.sendTenantInvitation(
+      "member@example.test",
+      "Forge 产品团队",
+      "测试所有者",
+      "https://forge.example.test/?invite=invite-token",
+    );
+    const invitation = JSON.parse(captured.init.body);
+    assert.equal(invitation.to[0], "member@example.test");
+    assert.equal(invitation.subject, "加入 Forge 产品团队");
+    assert.match(invitation.text, /测试所有者 邀请你加入 Forge 团队“Forge 产品团队”/);
+    assert.match(invitation.text, /https:\/\/forge\.example\.test\/\?invite=invite-token/);
+    assert.match(invitation.text, /只有与 member@example\.test 匹配且已验证的账户可以接受/);
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -155,8 +168,134 @@ test("Resend delivery sends text email with bearer auth and idempotency", async 
 class MemoryEmailDelivery {
   verification = [];
   resets = [];
+  invitations = [];
   async sendEmailVerification(email, url) { this.verification.push({ email, url }); }
   async sendPasswordReset(email, url) { this.resets.push({ email, url }); }
+  async sendTenantInvitation(email, teamName, inviterName, url) { this.invitations.push({ email, teamName, inviterName, url }); }
+}
+
+class MemoryTeamStore {
+  invitations = new Map();
+
+  constructor(auth) { this.auth = auth; }
+
+  async listTenants(userId) {
+    return [...this.auth.memberships.values()]
+      .filter((membership) => membership.userId === userId && membership.status === "active")
+      .map((membership) => ({ ...this.auth.tenants.get(membership.tenantId), role: membership.role }));
+  }
+
+  async hasActiveMembership(userId, tenantId) {
+    return this.auth.memberships.get(`${tenantId}:${userId}`)?.status === "active";
+  }
+
+  async createTeam(input) {
+    const tenant = { id: input.tenantId, name: input.name, slug: input.slug, kind: "team" };
+    this.auth.tenants.set(input.tenantId, tenant);
+    this.auth.memberships.set(`${input.tenantId}:${input.userId}`, {
+      tenantId: input.tenantId, userId: input.userId, role: "owner", status: "active", createdAt: new Date().toISOString(),
+    });
+    return { ...tenant, role: "owner" };
+  }
+
+  actor(actor, manage = false) {
+    const tenant = this.auth.tenants.get(actor.tenantId);
+    const membership = this.auth.memberships.get(`${actor.tenantId}:${actor.userId}`);
+    if (!tenant || membership?.status !== "active") throw new TeamAccessError("当前账户无权访问该团队");
+    if (tenant.kind !== "team") throw new TeamAccessError("个人工作区不支持成员管理");
+    if (manage && membership.role !== "owner" && membership.role !== "admin") throw new TeamAccessError("当前角色无权管理邀请");
+    return { ...tenant, role: membership.role };
+  }
+
+  async getTeamOverview(actor) {
+    const tenant = this.actor(actor);
+    const members = [...this.auth.memberships.values()]
+      .filter((membership) => membership.tenantId === actor.tenantId && membership.status === "active")
+      .map((membership) => {
+        const user = this.auth.users.get(membership.userId);
+        return { userId: user.id, email: user.email, displayName: user.displayName, role: membership.role, joinedAt: membership.createdAt || new Date().toISOString() };
+      });
+    const invitations = tenant.role === "member" ? [] : [...this.invitations.values()]
+      .filter((invitation) => invitation.tenantId === actor.tenantId && !invitation.acceptedAt && !invitation.revokedAt && Date.parse(invitation.expiresAt) > Date.now())
+      .map(({ tenantId: _tenantId, tokenHash: _tokenHash, ...invitation }) => invitation);
+    return { tenant, members, invitations };
+  }
+
+  async createInvitation(input) {
+    const tenant = this.actor({ tenantId: input.tenantId, userId: input.actorUserId }, true);
+    if (tenant.role === "admin" && input.role !== "member") throw new TeamAccessError("管理员只能邀请普通成员");
+    const existingUser = [...this.auth.users.values()].find((user) => user.email === input.email);
+    if (existingUser && await this.hasActiveMembership(existingUser.id, input.tenantId)) throw new TeamConflictError("该邮箱已经是团队成员");
+    for (const invitation of this.invitations.values()) {
+      if (invitation.tenantId === input.tenantId && invitation.email === input.email && !invitation.acceptedAt) invitation.revokedAt = new Date().toISOString();
+    }
+    const inviter = this.auth.users.get(input.actorUserId);
+    const invitation = {
+      id: input.id, tenantId: input.tenantId, tokenHash: input.tokenHash, email: input.email, role: input.role,
+      invitedByName: inviter.displayName, createdAt: new Date().toISOString(), expiresAt: input.expiresAt,
+    };
+    this.invitations.set(input.id, invitation);
+    const { tenantId: _tenantId, tokenHash: _tokenHash, ...publicInvitation } = invitation;
+    return { tenantName: tenant.name, invitation: publicInvitation };
+  }
+
+  async listPendingInvitations(_userId, email) {
+    return [...this.invitations.values()]
+      .filter((invitation) => invitation.email === email && !invitation.acceptedAt && !invitation.revokedAt && Date.parse(invitation.expiresAt) > Date.now())
+      .map((invitation) => ({
+        id: invitation.id, email: invitation.email, role: invitation.role, invitedByName: invitation.invitedByName,
+        createdAt: invitation.createdAt, expiresAt: invitation.expiresAt,
+        tenant: this.auth.tenants.get(invitation.tenantId),
+      }));
+  }
+
+  async acceptInvitation(input) {
+    const invitation = [...this.invitations.values()].find((item) =>
+      (input.tokenHash ? item.tokenHash === input.tokenHash : item.id === input.invitationId)
+      && !item.acceptedAt && !item.revokedAt && Date.parse(item.expiresAt) > Date.now());
+    if (!invitation) throw new TeamNotFoundError("邀请不存在、已使用或已经过期");
+    if (invitation.email !== input.email) throw new TeamAccessError("当前登录邮箱与邀请邮箱不一致");
+    const key = `${invitation.tenantId}:${input.userId}`;
+    if (this.auth.memberships.get(key)?.status === "active") throw new TeamConflictError("你已经是该团队成员");
+    this.auth.memberships.set(key, {
+      tenantId: invitation.tenantId, userId: input.userId, role: invitation.role, status: "active", createdAt: new Date().toISOString(),
+    });
+    invitation.acceptedAt = new Date().toISOString();
+    return { ...this.auth.tenants.get(invitation.tenantId), role: invitation.role };
+  }
+
+  async revokeInvitation(actor, invitationId) {
+    const tenant = this.actor(actor, true);
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation || invitation.tenantId !== actor.tenantId || invitation.acceptedAt || invitation.revokedAt) return false;
+    if (tenant.role === "admin" && invitation.role !== "member") throw new TeamAccessError("管理员不能撤销管理员邀请");
+    invitation.revokedAt = new Date().toISOString();
+    return true;
+  }
+
+  async updateMemberRole(actor, userId, role) {
+    if (this.actor(actor).role !== "owner") throw new TeamAccessError("只有所有者可以调整成员角色");
+    const membership = this.auth.memberships.get(`${actor.tenantId}:${userId}`);
+    if (!membership || membership.status !== "active") return false;
+    if (membership.role === "owner" && role !== "owner") this.protectLastOwner(actor.tenantId);
+    membership.role = role;
+    return true;
+  }
+
+  async removeMember(actor, userId) {
+    if (this.actor(actor).role !== "owner") throw new TeamAccessError("只有所有者可以移除成员");
+    const membership = this.auth.memberships.get(`${actor.tenantId}:${userId}`);
+    if (!membership || membership.status !== "active") return false;
+    if (membership.role === "owner") this.protectLastOwner(actor.tenantId);
+    membership.status = "suspended";
+    for (const [hash, session] of this.auth.sessions) if (session.user.id === userId && session.tenant.id === actor.tenantId) this.auth.sessions.delete(hash);
+    return true;
+  }
+
+  protectLastOwner(tenantId) {
+    const owners = [...this.auth.memberships.values()].filter((item) => item.tenantId === tenantId && item.status === "active" && item.role === "owner");
+    if (owners.length <= 1) throw new TeamConflictError("团队必须至少保留一位所有者");
+  }
 }
 
 class MemoryTenantStore {
@@ -367,6 +506,108 @@ test("email verification, password recovery, and session revocation form a compl
     });
     assert.equal(revokeCurrent.statusCode, 204);
     assert.deepEqual((await app.inject({ method: "GET", url: "/v1/auth/session", headers: { cookie: secondCookie } })).json(), { authenticated: false });
+  } finally {
+    await app.close();
+  }
+});
+
+test("team workspaces enforce invitation, role, last-owner, and tenant-switch boundaries", async () => {
+  const origin = "http://127.0.0.1:5173";
+  const store = new MemoryAuthStore();
+  const teamStore = new MemoryTeamStore(store);
+  const app = await createCloudApi({ store, teamStore, allowedOrigins: [origin], cookieSecure: false });
+  const register = async (email, displayName) => {
+    const response = await app.inject({
+      method: "POST", url: "/v1/auth/register", headers: { origin },
+      payload: { email, displayName, password: "a secure team password 2026" },
+    });
+    assert.equal(response.statusCode, 201);
+    return { cookie: sessionCookie(response), session: response.json() };
+  };
+  try {
+    let owner = await register("owner@example.test", "团队所有者");
+    let member = await register("member@example.test", "受邀成员");
+
+    const create = await app.inject({
+      method: "POST", url: "/v1/tenants",
+      headers: { origin, cookie: owner.cookie, "x-csrf-token": owner.session.csrfToken },
+      payload: { name: "Forge 研发团队" },
+    });
+    assert.equal(create.statusCode, 201);
+    const team = create.json();
+    assert.equal(team.kind, "team");
+    assert.equal(team.role, "owner");
+
+    const switchedOwner = await app.inject({
+      method: "POST", url: "/v1/auth/tenant",
+      headers: { origin, cookie: owner.cookie, "x-csrf-token": owner.session.csrfToken },
+      payload: { tenantId: team.id },
+    });
+    assert.equal(switchedOwner.statusCode, 200);
+    owner = { cookie: sessionCookie(switchedOwner), session: switchedOwner.json() };
+    assert.equal(owner.session.tenant.id, team.id);
+
+    const invite = await app.inject({
+      method: "POST", url: "/v1/team/invitations",
+      headers: { origin, cookie: owner.cookie, "x-csrf-token": owner.session.csrfToken },
+      payload: { email: "MEMBER@example.test", role: "member" },
+    });
+    assert.equal(invite.statusCode, 201);
+    assert.equal(invite.json().delivery, "unavailable");
+
+    const pending = await app.inject({ method: "GET", url: "/v1/invitations", headers: { cookie: member.cookie } });
+    assert.equal(pending.statusCode, 200);
+    assert.equal(pending.json().invitations.length, 1);
+    assert.equal(pending.json().invitations[0].tenant.id, team.id);
+
+    const accepted = await app.inject({
+      method: "POST", url: "/v1/invitations/accept",
+      headers: { origin, cookie: member.cookie, "x-csrf-token": member.session.csrfToken },
+      payload: { invitationId: pending.json().invitations[0].id },
+    });
+    assert.equal(accepted.statusCode, 200);
+    assert.equal(accepted.json().role, "member");
+
+    const repeated = await app.inject({
+      method: "POST", url: "/v1/invitations/accept",
+      headers: { origin, cookie: member.cookie, "x-csrf-token": member.session.csrfToken },
+      payload: { invitationId: pending.json().invitations[0].id },
+    });
+    assert.equal(repeated.statusCode, 404);
+
+    const switchedMember = await app.inject({
+      method: "POST", url: "/v1/auth/tenant",
+      headers: { origin, cookie: member.cookie, "x-csrf-token": member.session.csrfToken },
+      payload: { tenantId: team.id },
+    });
+    assert.equal(switchedMember.statusCode, 200);
+    member = { cookie: sessionCookie(switchedMember), session: switchedMember.json() };
+
+    const memberCannotInvite = await app.inject({
+      method: "POST", url: "/v1/team/invitations",
+      headers: { origin, cookie: member.cookie, "x-csrf-token": member.session.csrfToken },
+      payload: { email: "third@example.test", role: "member" },
+    });
+    assert.equal(memberCannotInvite.statusCode, 403);
+
+    const demoteLastOwner = await app.inject({
+      method: "PATCH", url: `/v1/team/members/${owner.session.user.id}`,
+      headers: { origin, cookie: owner.cookie, "x-csrf-token": owner.session.csrfToken },
+      payload: { role: "admin" },
+    });
+    assert.equal(demoteLastOwner.statusCode, 409);
+    assert.match(demoteLastOwner.json().message, /至少保留一位所有者/);
+
+    const promote = await app.inject({
+      method: "PATCH", url: `/v1/team/members/${member.session.user.id}`,
+      headers: { origin, cookie: owner.cookie, "x-csrf-token": owner.session.csrfToken },
+      payload: { role: "owner" },
+    });
+    assert.equal(promote.statusCode, 204);
+
+    const tenants = await app.inject({ method: "GET", url: "/v1/tenants", headers: { cookie: member.cookie } });
+    assert.equal(tenants.statusCode, 200);
+    assert.equal(tenants.json().tenants.some((tenant) => tenant.id === team.id && tenant.role === "owner"), true);
   } finally {
     await app.close();
   }

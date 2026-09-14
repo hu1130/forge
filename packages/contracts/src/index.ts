@@ -184,7 +184,43 @@ export interface CloudTenantContext {
   id: string;
   name: string;
   slug: string;
+  kind: "personal" | "team";
   role: "owner" | "admin" | "member";
+}
+
+export interface CloudTenantListPayload {
+  tenants: CloudTenantContext[];
+}
+
+export interface CloudTenantMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: "owner" | "admin" | "member";
+  joinedAt: string;
+}
+
+export interface CloudTenantInvitation {
+  id: string;
+  email: string;
+  role: "admin" | "member";
+  invitedByName: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface CloudPendingInvitation extends CloudTenantInvitation {
+  tenant: Pick<CloudTenantContext, "id" | "name" | "slug" | "kind">;
+}
+
+export interface CloudTeamOverview {
+  tenant: CloudTenantContext;
+  members: CloudTenantMember[];
+  invitations: CloudTenantInvitation[];
+}
+
+export interface CloudPendingInvitationsPayload {
+  invitations: CloudPendingInvitation[];
 }
 
 export interface ForgeIdentityContext {

@@ -2,9 +2,11 @@ const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = req
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 app.setName("Forge");
+app.setAppUserModelId("com.forge.local");
 
 const webUrl = process.env.FORGE_WEB_URL || (app.isPackaged ? "http://127.0.0.1:4782" : "http://127.0.0.1:5173");
 const cloudApiUrl = (process.env.FORGE_CLOUD_API_URL?.trim() || "").replace(/\/$/, "");
@@ -217,6 +219,69 @@ async function waitForDaemon(timeoutMs = 20_000) {
   throw new Error("Forge Daemon 启动超时");
 }
 
+function redactDiagnosticText(value) {
+  if (!value) return null;
+  const homePath = app.getPath("home");
+  return String(value)
+    .replaceAll(homePath, "%USERPROFILE%")
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "[REDACTED_API_KEY]")
+    .slice(0, 1000);
+}
+
+async function readDaemonDiagnostics() {
+  try {
+    const response = await fetch("http://127.0.0.1:4782/api/health", {
+      headers: { authorization: `Bearer ${apiToken}` },
+      signal: AbortSignal.timeout(4_000),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) return { reachable: false, status: response.status };
+    return {
+      reachable: true,
+      daemon: payload.daemon === "ready" ? "ready" : "unknown",
+      appServer: ["starting", "ready", "unavailable", "error"].includes(payload.appServer) ? payload.appServer : "unknown",
+      appServerVersion: typeof payload.appServerVersion === "string" ? payload.appServerVersion : null,
+      detail: redactDiagnosticText(payload.detail),
+    };
+  } catch (error) {
+    return { reachable: false, error: redactDiagnosticText(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+async function exportDiagnostics() {
+  const stamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
+  const result = await dialog.showSaveDialog({
+    title: "导出 Forge 诊断信息",
+    defaultPath: path.join(app.getPath("documents"), `Forge-Diagnostics-${stamp}.json`),
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return { saved: false };
+  const payload = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    privacy: "不包含 API Key、MCP Token、邮箱、租户 ID、工作区路径、任务或对话内容",
+    app: { name: app.getName(), version: app.getVersion(), packaged: app.isPackaged },
+    system: { platform: os.platform(), release: os.release(), arch: os.arch(), locale: app.getLocale() },
+    runtime: {
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      bundledCodex: "0.153.4",
+      daemonProcessRunning: Boolean(daemonProcess && daemonProcess.exitCode === null),
+      daemonFailure: redactDiagnosticText(daemonFailure),
+    },
+    configuration: {
+      deepSeekConfigured: Boolean(readDeepSeekApiKey()),
+      cloudConfigured: Boolean(cloudApiUrl),
+      encryptedStorageAvailable: safeStorage.isEncryptionAvailable(),
+      identityMode: activeIdentity.mode,
+    },
+    daemon: await readDaemonDiagnostics(),
+  };
+  writeFileSync(result.filePath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return { saved: true };
+}
+
 function validCloudId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -360,6 +425,10 @@ async function initializeApp() {
     const restarted = await restartDaemon();
     if (restarted) await waitForDaemon();
     return { restarted };
+  });
+  ipcMain.handle("forge:export-diagnostics", async (event) => {
+    assertTrustedSender(event);
+    return exportDiagnostics();
   });
   ipcMain.handle("forge:activate-cloud-context", async (event) => {
     assertTrustedSender(event);

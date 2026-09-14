@@ -33,4 +33,4 @@
 
 ## 尚未伪装成已完成的部分
 
-当前 `demo` 是显式测试 Provider，DeepSeek 是首个真实 Provider。OpenAI、Claude、Gemini 与其他 OpenAI-compatible Provider Gateway、交互式工具审批、完整 Git/终端界面、MCP/Skills/多 Agent 仍属于后续产品功能；在对应适配器完成前，界面会拒绝真实请求而不是静默降级。
+当前 `demo` 是显式测试 Provider，DeepSeek 是首个真实 Provider。交互式工具审批、Git、终端、Skill 和 MCP 已经接入真实本机运行时；OpenAI、Claude、Gemini、其他 OpenAI-compatible Provider Gateway 与多 Agent 仍属于后续产品功能。在对应适配器完成前，界面会拒绝真实请求而不是静默降级。

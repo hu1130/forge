@@ -592,6 +592,13 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .runtime-settings > div { min-height: 50px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 12px; }
 .runtime-settings > div + div { border-top: 1px solid var(--line); }
 .runtime-settings > small { display: block; padding: 11px 14px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--line); line-height: 1.5; overflow-wrap: anywhere; }
+.runtime-diagnostics { max-width: 560px; display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 12px; padding: 15px 14px; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+.runtime-diagnostics > div { min-width: 0; }
+.runtime-diagnostics h4 { margin: 0 0 4px; font-size: 12px; }
+.runtime-diagnostics p { max-width: 390px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.runtime-diagnostics small { display: block; margin-top: 5px; color: var(--warning); font-size: 9px; }
+.runtime-diagnostics button { flex: none; }
+.runtime-diagnostics button:disabled { opacity: .45; cursor: not-allowed; }
 .workspace-setting { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 .workspace-setting > div { min-width: 0; display: grid; gap: 5px; }
 .workspace-setting strong { font-size: 11px; }
@@ -1048,6 +1055,7 @@ body { background: var(--canvas); }
 .settings-feedback { margin: 0 0 16px; }
 .settings-heading { margin-bottom: 16px; }
 .provider-setting, .api-key-form, .mcp-form, .extension-card, .runtime-settings, .cloud-identity-card, .cloud-team-panel, .cloud-privacy-note, .cloud-action-grid section, .cloud-session-card, .cloud-backup-panel { border-color: var(--line); border-radius: 10px; }
+.runtime-diagnostics { border-color: var(--line); border-radius: 10px; }
 
 html[data-density="compact"] .app-shell, html[data-density="compact"] .app-shell.inspector-closed { gap: 7px; padding: 10px; padding-top: 15px; }
 html[data-density="compact"] .sidebar { padding-block: 8px; }
@@ -1090,6 +1098,7 @@ html[data-reduce-motion="true"] *, html[data-reduce-motion="true"] *::before, ht
   .settings-overview-grid, .appearance-options { grid-template-columns: minmax(0, 1fr); }
   .preference-list > label { align-items: flex-start; flex-direction: column; gap: 10px; }
   .preference-list select { width: 100%; min-width: 0; }
+  .runtime-diagnostics { align-items: flex-start; flex-direction: column; gap: 12px; }
 }
 
 /* Legacy v0.4.1 redesign kept for reference but disabled after the v0.21 rebuild. */

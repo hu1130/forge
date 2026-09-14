@@ -1,6 +1,6 @@
 {
   "name": "local-codex-like",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -18,7 +18,9 @@
     "queue:probe": "pnpm --filter @forge/daemon build && node ./spikes/app-server/queue-probe.mjs",
     "test": "pnpm --filter @forge/cloud-api build && pnpm --filter @forge/daemon build && node --test ./tests/**/*.test.mjs",
     "test:mysql": "pnpm --filter @forge/cloud-api build && node ./scripts/verify-mysql-tenant-isolation.mjs",
-    "capture:ui": "pnpm --filter @forge/desktop exec electron ../../scripts/capture-web-ui.cjs"
+    "capture:ui": "pnpm --filter @forge/desktop exec electron ../../scripts/capture-web-ui.cjs",
+    "brand:assets": "pnpm --filter @forge/desktop exec electron ../../scripts/generate-brand-assets.cjs",
+    "test:ui": "pnpm build && pnpm --filter @forge/desktop exec electron ../../scripts/smoke-web-ui.cjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

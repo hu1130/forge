@@ -14,6 +14,7 @@ declare global {
       saveMcpToken: (name: string, token: string) => Promise<{ configured: boolean; envVar: string }>;
       deleteMcpToken: (name: string) => Promise<{ configured: boolean }>;
       restartRuntime: () => Promise<{ restarted: boolean }>;
+      exportDiagnostics: () => Promise<{ saved: boolean }>;
       activateCloudContext: () => Promise<{ identity: { tenantId: string; userId: string; mode: "cloud" }; restarted: boolean }>;
       activateLocalContext: () => Promise<{ identity: { tenantId: string; userId: string; mode: "local" }; restarted: boolean }>;
     };

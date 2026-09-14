@@ -1,6 +1,6 @@
 {
   "name": "@forge/desktop",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "private": true,
   "description": "Forge Windows local AI coding workspace",
   "author": "Forge",
@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "electron .",
     "build": "node -e \"console.log('Electron shell is JavaScript-only; no compile step required')\"",
-    "pack": "pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --dir",
-    "dist": "pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --win nsis"
+    "pack": "pnpm --workspace-root brand:assets && pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --dir",
+    "dist": "pnpm --workspace-root brand:assets && pnpm --workspace-root build && node ../../scripts/prepare-codex-bundle.mjs && electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "44.2.0",
@@ -51,12 +51,15 @@
       }
     ],
     "win": {
+      "icon": "assets/forge-icon.ico",
       "target": [
         "nsis"
       ],
       "artifactName": "Forge-Setup-${version}.${ext}"
     },
     "nsis": {
+      "installerIcon": "assets/forge-icon.ico",
+      "uninstallerIcon": "assets/forge-icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

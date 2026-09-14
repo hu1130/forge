@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("forgeDesktop", {
   saveMcpToken: (name, token) => ipcRenderer.invoke("forge:save-mcp-token", name, token),
   deleteMcpToken: (name) => ipcRenderer.invoke("forge:delete-mcp-token", name),
   restartRuntime: () => ipcRenderer.invoke("forge:restart-runtime"),
+  exportDiagnostics: () => ipcRenderer.invoke("forge:export-diagnostics"),
   activateCloudContext: () => ipcRenderer.invoke("forge:activate-cloud-context"),
   activateLocalContext: () => ipcRenderer.invoke("forge:activate-local-context"),
 });

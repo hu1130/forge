@@ -28,6 +28,8 @@ jobs:
         run: pnpm typecheck
       - name: Build
         run: pnpm build
+      - name: Run desktop UI smoke
+        run: pnpm --filter @forge/desktop exec electron ../../scripts/smoke-web-ui.cjs
 
   mysql-8-4:
     runs-on: ubuntu-latest

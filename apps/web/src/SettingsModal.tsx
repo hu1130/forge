@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import {
-  ArrowLeft, Box, Cable, Check, Cloud, Code2, Command, DatabaseBackup, FolderCog, Gauge,
+  ArrowLeft, Box, Cable, Check, Cloud, Code2, Command, DatabaseBackup, Download, FolderCog, Gauge,
   Home, LoaderCircle, Paintbrush, PlugZap, Plus, RefreshCw, ShieldCheck, SlidersHorizontal,
   Sparkles, Store, Trash2, X,
 } from "lucide-react";
@@ -136,6 +136,9 @@ export default function SettingsModal(props: SettingsModalProps) {
   const [preferenceBusy, setPreferenceBusy] = useState(false);
   const [preferenceMessage, setPreferenceMessage] = useState("");
   const [preferenceError, setPreferenceError] = useState("");
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [diagnosticMessage, setDiagnosticMessage] = useState("");
+  const [diagnosticError, setDiagnosticError] = useState("");
 
   const savePreferences = async (patch: Partial<WorkspacePreferences>) => {
     setPreferenceBusy(true);
@@ -161,6 +164,24 @@ export default function SettingsModal(props: SettingsModalProps) {
       setExtensionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoadingExtensions(false);
+    }
+  };
+
+  const exportDiagnostics = async () => {
+    if (!window.forgeDesktop?.exportDiagnostics) {
+      setDiagnosticError("诊断导出仅在 Forge 桌面版中可用。");
+      return;
+    }
+    setDiagnosticBusy(true);
+    setDiagnosticMessage("");
+    setDiagnosticError("");
+    try {
+      const result = await window.forgeDesktop.exportDiagnostics();
+      if (result.saved) setDiagnosticMessage("诊断信息已导出，不包含密钥、账户、工作区和对话内容。");
+    } catch (reason) {
+      setDiagnosticError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDiagnosticBusy(false);
     }
   };
 
@@ -361,7 +382,7 @@ export default function SettingsModal(props: SettingsModalProps) {
       <main className="settings-content">
         <header className="settings-page-header"><div><span>Forge / 设置</span><h3>{({ overview: "概览", workspace: "偏好设置", permissions: "权限", providers: "模型提供商", marketplace: "扩展市场", skills: "Skills", mcp: "MCP 服务", appearance: "外观", runtime: "运行时", account: "账户与同步", backup: "备份与恢复" } satisfies Record<SettingsTab, string>)[tab]}</h3></div><button ref={props.closeButtonRef} className="icon-button" aria-label="关闭设置" onClick={props.onClose}><X size={18} /></button></header>
         <div className="settings-page-body">
-          {(extensionError || extensionMessage || preferenceError || preferenceMessage) && <div className={`settings-feedback ${extensionError || preferenceError ? "feedback-error" : "feedback-success"}`} role={extensionError || preferenceError ? "alert" : "status"}>{extensionError || preferenceError || extensionMessage || preferenceMessage}</div>}
+          {(extensionError || extensionMessage || preferenceError || preferenceMessage || diagnosticError || diagnosticMessage) && <div className={`settings-feedback ${extensionError || preferenceError || diagnosticError ? "feedback-error" : "feedback-success"}`} role={extensionError || preferenceError || diagnosticError ? "alert" : "status"}>{extensionError || preferenceError || diagnosticError || extensionMessage || preferenceMessage || diagnosticMessage}</div>}
 
           {tab === "overview" && <>
             <div className="settings-intro"><h4>让工作台按你的方式运行</h4><p>模型、审批、工作区与扩展均连接真实的 Forge 本机运行时；修改后会立即保存。</p></div>
@@ -431,7 +452,7 @@ export default function SettingsModal(props: SettingsModalProps) {
             {loadingExtensions ? <div className="settings-loading"><LoaderCircle className="spin" size={17} />正在读取 MCP…</div> : <McpList servers={extensions.mcpServers} busy={mcpBusy} onToggle={(server) => void toggleMcp(server)} onDelete={(server) => void deleteMcp(server)} />}
           </>}
 
-          {tab === "runtime" && <><div className="settings-intro"><h4>本机运行时</h4><p>Forge 使用独立的 Codex 数据目录，不修改你已有的 Codex 配置。</p></div><div className="runtime-settings"><div><span>Daemon</span><StateBadge state="ok"><Check size={12} />已连接</StateBadge></div><div><span>App Server</span><StateBadge state={props.runtime.appServer === "ready" ? "ok" : "warning"}>{props.runtime.appServer === "ready" ? "已就绪" : props.runtime.appServer === "starting" ? "启动中" : "不可用"}</StateBadge></div><small>{props.runtime.detail}</small></div></>}
+          {tab === "runtime" && <><div className="settings-intro"><h4>本机运行时</h4><p>Forge 使用独立的 Codex 数据目录，不修改你已有的 Codex 配置。</p></div><div className="runtime-settings"><div><span>Daemon</span><StateBadge state="ok"><Check size={12} />已连接</StateBadge></div><div><span>App Server</span><StateBadge state={props.runtime.appServer === "ready" ? "ok" : "warning"}>{props.runtime.appServer === "ready" ? "已就绪" : props.runtime.appServer === "starting" ? "启动中" : "不可用"}</StateBadge></div><small>{props.runtime.detail}</small></div><section className="runtime-diagnostics" aria-labelledby="runtime-diagnostics-title"><div><h4 id="runtime-diagnostics-title">问题诊断</h4><p>导出版本、系统和运行状态，便于排查启动或连接问题。不会包含密钥、账户、工作区路径和对话内容。</p>{!window.forgeDesktop?.exportDiagnostics && <small>浏览器开发模式不可导出，请使用 Forge 桌面版。</small>}</div><button className="primary-small" type="button" disabled={diagnosticBusy || !window.forgeDesktop?.exportDiagnostics} onClick={() => void exportDiagnostics()}>{diagnosticBusy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}{diagnosticBusy ? "正在导出…" : "导出诊断信息"}</button></section></>}
         </div>
       </main>
     </section>

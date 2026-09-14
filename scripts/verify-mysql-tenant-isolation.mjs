@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EncryptedBackupVersionConflictError } from "../apps/cloud-api/dist/encrypted-backups.js";
 import { createForgeMySqlPool, migrateDatabase, MySqlAuthStore } from "../apps/cloud-api/dist/mysql-store.js";
 import { TeamAccessError, TeamConflictError } from "../apps/cloud-api/dist/team-service.js";
 
@@ -28,7 +29,7 @@ try {
   await migrateDatabase(adminPool);
   await migrateDatabase(adminPool);
   const [appliedMigrations] = await adminPool.query("SELECT name FROM forge_schema_migrations ORDER BY name");
-  assert.deepEqual(appliedMigrations.map((row) => row.name), ["001_identity.sql", "002_tenant_resources.sql", "003_account_security.sql", "004_team_workspaces.sql"]);
+  assert.deepEqual(appliedMigrations.map((row) => row.name), ["001_identity.sql", "002_tenant_resources.sql", "003_account_security.sql", "004_team_workspaces.sql", "005_encrypted_task_backups.sql"]);
   await createAccount(accountA, "MYSQLA", new Date().toISOString());
   await createAccount(accountB, "MYSQLB");
   await adminPool.execute(
@@ -122,6 +123,24 @@ try {
     store.listResources({ tenantId: accountB.tenantId, userId: accountA.userId }, "task"),
     /无权访问该租户/,
   );
+
+  const encryptedEnvelope = (marker) => ({
+    format: "forge-task-backup", formatVersion: 1, encryption: "aes-256-gcm", compression: "gzip", keyDerivation: "scrypt",
+    salt: Buffer.alloc(16, 1).toString("base64"), iv: Buffer.alloc(12, 2).toString("base64"),
+    authTag: Buffer.alloc(16, 3).toString("base64"), ciphertext: Buffer.from(`opaque-${marker}`).toString("base64"),
+    createdAt: new Date().toISOString(), taskCount: 1,
+  });
+  const backupA = await store.upsertTaskBackup(principalA, { envelope: encryptedEnvelope("tenant-a"), sizeBytes: 15, expectedVersion: 0 });
+  const backupB = await store.upsertTaskBackup(principalB, { envelope: encryptedEnvelope("tenant-b"), sizeBytes: 15, expectedVersion: 0 });
+  assert.equal(backupA.version, 1);
+  assert.notEqual((await store.getTaskBackup(principalA)).envelope.ciphertext, (await store.getTaskBackup(principalB)).envelope.ciphertext);
+  await assert.rejects(
+    store.upsertTaskBackup(principalA, { envelope: encryptedEnvelope("stale"), sizeBytes: 12, expectedVersion: 0 }),
+    (error) => error instanceof EncryptedBackupVersionConflictError,
+  );
+  assert.equal(await store.deleteTaskBackup(principalA), true);
+  assert.equal(await store.getTaskBackup(principalA), undefined);
+  assert.equal((await store.getTaskBackup(principalB)).version, backupB.version);
 
   await adminPool.execute(
     "UPDATE forge_tenant_memberships SET status = 'suspended' WHERE tenant_id = ? AND user_id = ?",

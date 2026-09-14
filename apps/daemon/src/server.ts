@@ -6,7 +6,7 @@ import staticPlugin from "@fastify/static";
 import Fastify, { type FastifyReply } from "fastify";
 import type {
   Activity, ApprovalRequest, BootstrapPayload, CloudMcpCatalogMetadata, CloudSkillCatalogMetadata,
-  CloudTaskMetadata, ExtensionPayload, ExtensionSyncSnapshot, ForgeIdentityContext, ForgeTask, MarketplacePayload,
+  CloudTaskMetadata, EncryptedTaskBackupEnvelope, ExtensionPayload, ExtensionSyncSnapshot, ForgeIdentityContext, ForgeTask, MarketplacePayload,
   McpConnectionStatus, McpServerInfo, ProviderOption, QueuedTurn, RuntimeStatus, SkillInfo,
   SkillScope, TaskStreamEvent, WorkspaceFileInfo,
 } from "@forge/contracts";
@@ -1092,6 +1092,30 @@ app.post("/api/local-profile/import", async (_request, reply) => {
 app.get("/api/cloud-sync/tasks", async (_request, reply) => {
   if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "任务目录同步只在 Cloud 租户中可用" });
   return store.taskSyncSnapshot();
+});
+
+app.post<{ Body: { passphrase?: string } }>("/api/cloud-backup/tasks/encrypt", async (request, reply) => {
+  if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "加密云备份只在 Cloud 工作区中可用" });
+  if (runningTurns.size) return reply.code(409).send({ message: "请先停止正在运行的任务，再创建云备份" });
+  try {
+    return await store.createEncryptedBackup(typeof request.body?.passphrase === "string" ? request.body.passphrase : "");
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post<{ Body: { passphrase?: string; envelope?: EncryptedTaskBackupEnvelope } }>("/api/cloud-backup/tasks/restore", async (request, reply) => {
+  if (store.identityContext().mode !== "cloud") return reply.code(400).send({ message: "加密云备份只在 Cloud 工作区中可用" });
+  if (runningTurns.size) return reply.code(409).send({ message: "请先停止正在运行的任务，再恢复云备份" });
+  if (!request.body?.envelope) return reply.code(400).send({ message: "加密任务备份不能为空" });
+  try {
+    return await store.restoreEncryptedBackup(
+      request.body.envelope,
+      typeof request.body.passphrase === "string" ? request.body.passphrase : "",
+    );
+  } catch (error) {
+    return reply.code(400).send({ message: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post<{ Body: { taskId?: string; resourceVersion?: number; taskUpdatedAt?: string } }>("/api/cloud-sync/tasks/receipt", async (request, reply) => {

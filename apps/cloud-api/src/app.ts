@@ -6,6 +6,9 @@ import type {
   CloudAuthSession, CloudPendingInvitationsPayload, CloudSessionListPayload, CloudTenantListPayload,
 } from "@forge/contracts";
 import { AuthService, DuplicateEmailError, type AuthStore } from "./auth-service.js";
+import {
+  backupMetadata, EncryptedBackupVersionConflictError, validateEncryptedTaskBackup, type EncryptedBackupStore,
+} from "./encrypted-backups.js";
 import type { EmailDelivery } from "./email-delivery.js";
 import { TenantAccessError, TenantVersionConflictError, tenantResourceKey, tenantResourceKind, tenantResourcePayload, type TenantResourceStore } from "./tenant-resources.js";
 import {
@@ -16,6 +19,7 @@ export interface CloudApiOptions {
   store: AuthStore;
   tenantStore?: TenantResourceStore;
   teamStore?: TeamStore;
+  backupStore?: EncryptedBackupStore;
   allowedOrigins: string[];
   cookieSecure: boolean;
   cookieSameSite?: "lax" | "none";
@@ -97,6 +101,12 @@ export async function createCloudApi(options: CloudApiOptions) {
     if (error instanceof TeamNotFoundError) return reply.code(404).send({ message: error.message });
     if (error instanceof TeamConflictError) return reply.code(409).send({ message: error.message });
     if (error instanceof Error && /团队名称|邀请|成员角色/.test(error.message)) return reply.code(400).send({ message: error.message });
+    return reply.code(500).send({ message: fallback });
+  };
+  const backupError = (reply: FastifyReply, error: unknown, fallback: string) => {
+    if (error instanceof TenantAccessError) return reply.code(403).send({ message: error.message });
+    if (error instanceof EncryptedBackupVersionConflictError) return reply.code(409).send({ message: error.message, current: error.current });
+    if (error instanceof Error && /加密任务备份|云端备份/.test(error.message)) return reply.code(400).send({ message: error.message });
     return reply.code(500).send({ message: fallback });
   };
   const sendEmailVerification = async (userId: string) => {
@@ -447,6 +457,82 @@ export async function createCloudApi(options: CloudApiOptions) {
     } catch (error) {
       request.log.error(error);
       return teamError(reply, error, "暂时无法移除成员");
+    }
+  });
+
+  app.get("/v1/backups/tasks", async (request, reply) => {
+    if (!options.backupStore) return reply.code(503).send({ message: "加密备份服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    try {
+      const backup = await options.backupStore.getTaskBackup({ tenantId: session.tenant.id, userId: session.user.id });
+      return { tenantId: session.tenant.id, ...(backup ? { backup: backupMetadata(backup) } : {}) };
+    } catch (error) {
+      request.log.error(error);
+      return backupError(reply, error, "暂时无法读取云端备份");
+    }
+  });
+
+  app.get("/v1/backups/tasks/download", async (request, reply) => {
+    if (!options.backupStore) return reply.code(503).send({ message: "加密备份服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    try {
+      const backup = await options.backupStore.getTaskBackup({ tenantId: session.tenant.id, userId: session.user.id });
+      if (!backup) return reply.code(404).send({ message: "当前工作区还没有任务备份" });
+      return { tenantId: session.tenant.id, ...backup };
+    } catch (error) {
+      request.log.error(error);
+      return backupError(reply, error, "暂时无法下载云端备份");
+    }
+  });
+
+  app.put<{ Body: { envelope?: unknown; expectedVersion?: number } }>("/v1/backups/tasks", {
+    bodyLimit: 12 * 1024 * 1024,
+    config: { rateLimit: { max: 12, timeWindow: "1 hour" } },
+  }, async (request, reply) => {
+    if (!options.backupStore) return reply.code(503).send({ message: "加密备份服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    const expectedVersion = request.body?.expectedVersion;
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)) {
+      return reply.code(400).send({ message: "云端备份版本无效" });
+    }
+    try {
+      const validated = validateEncryptedTaskBackup(request.body?.envelope);
+      const stored = await options.backupStore.upsertTaskBackup(
+        { tenantId: session.tenant.id, userId: session.user.id },
+        { envelope: validated.envelope, sizeBytes: validated.sizeBytes, expectedVersion },
+      );
+      return backupMetadata(stored);
+    } catch (error) {
+      request.log.error(error);
+      return backupError(reply, error, "暂时无法保存云端备份");
+    }
+  });
+
+  app.delete("/v1/backups/tasks", async (request, reply) => {
+    if (!options.backupStore) return reply.code(503).send({ message: "加密备份服务尚未启用" });
+    const session = await auth.authenticate(request.cookies[sessionCookieName]);
+    if (!session) return reply.code(401).send({ message: "请先登录" });
+    if (!session.user.emailVerified) return reply.code(403).send({ message: "请先验证邮箱" });
+    const csrfToken = request.headers["x-csrf-token"];
+    if (!auth.csrfMatches(session, typeof csrfToken === "string" ? csrfToken : undefined)) {
+      return reply.code(403).send({ message: "会话校验失败，请刷新后重试" });
+    }
+    try {
+      const deleted = await options.backupStore.deleteTaskBackup({ tenantId: session.tenant.id, userId: session.user.id });
+      return deleted ? reply.code(204).send() : reply.code(404).send({ message: "当前工作区还没有任务备份" });
+    } catch (error) {
+      request.log.error(error);
+      return backupError(reply, error, "暂时无法删除云端备份");
     }
   });
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCloudApi } from "../apps/cloud-api/dist/app.js";
 import { DuplicateEmailError } from "../apps/cloud-api/dist/auth-service.js";
+import { EncryptedBackupVersionConflictError } from "../apps/cloud-api/dist/encrypted-backups.js";
 import { ResendEmailDelivery } from "../apps/cloud-api/dist/email-delivery.js";
 import { hashPassword, verifyPassword } from "../apps/cloud-api/dist/password.js";
 import { TenantVersionConflictError } from "../apps/cloud-api/dist/tenant-resources.js";
@@ -335,6 +336,38 @@ class MemoryTenantStore {
   }
 }
 
+class MemoryBackupStore {
+  backups = new Map();
+
+  async getTaskBackup(principal) {
+    return this.backups.get(`${principal.tenantId}:${principal.userId}`);
+  }
+
+  async upsertTaskBackup(principal, input) {
+    const key = `${principal.tenantId}:${principal.userId}`;
+    const current = this.backups.get(key);
+    if (input.expectedVersion !== undefined
+      && ((!current && input.expectedVersion !== 0) || (current && current.version !== input.expectedVersion))) {
+      const metadata = current ? (({ envelope: _envelope, ...value }) => value)(current) : undefined;
+      throw new EncryptedBackupVersionConflictError(metadata);
+    }
+    const stored = {
+      envelope: input.envelope,
+      version: (current?.version || 0) + 1,
+      sizeBytes: input.sizeBytes,
+      taskCount: input.envelope.taskCount,
+      createdAt: input.envelope.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+    this.backups.set(key, stored);
+    return stored;
+  }
+
+  async deleteTaskBackup(principal) {
+    return this.backups.delete(`${principal.tenantId}:${principal.userId}`);
+  }
+}
+
 function sessionCookie(response) {
   const header = response.headers["set-cookie"];
   assert.equal(typeof header, "string");
@@ -608,6 +641,64 @@ test("team workspaces enforce invitation, role, last-owner, and tenant-switch bo
     const tenants = await app.inject({ method: "GET", url: "/v1/tenants", headers: { cookie: member.cookie } });
     assert.equal(tenants.statusCode, 200);
     assert.equal(tenants.json().tenants.some((tenant) => tenant.id === team.id && tenant.role === "owner"), true);
+  } finally {
+    await app.close();
+  }
+});
+
+test("encrypted task backups are opaque, optimistic, user-scoped, and deletable", async () => {
+  const origin = "http://127.0.0.1:5173";
+  const authStore = new MemoryAuthStore();
+  const backupStore = new MemoryBackupStore();
+  const app = await createCloudApi({ store: authStore, backupStore, allowedOrigins: [origin], cookieSecure: false });
+  const register = async (email, displayName) => {
+    const response = await app.inject({
+      method: "POST", url: "/v1/auth/register", headers: { origin },
+      payload: { email, displayName, password: "a secure backup password 2026" },
+    });
+    assert.equal(response.statusCode, 201);
+    return { cookie: sessionCookie(response), session: response.json() };
+  };
+  const envelope = {
+    format: "forge-task-backup", formatVersion: 1, encryption: "aes-256-gcm", compression: "gzip", keyDerivation: "scrypt",
+    salt: Buffer.alloc(16, 1).toString("base64"), iv: Buffer.alloc(12, 2).toString("base64"),
+    authTag: Buffer.alloc(16, 3).toString("base64"), ciphertext: Buffer.from("opaque encrypted task history").toString("base64"),
+    createdAt: new Date().toISOString(), taskCount: 3,
+  };
+  try {
+    const accountA = await register("backup-a@example.test", "Backup A");
+    const accountB = await register("backup-b@example.test", "Backup B");
+    const empty = await app.inject({ method: "GET", url: "/v1/backups/tasks", headers: { cookie: accountA.cookie } });
+    assert.equal(empty.statusCode, 200);
+    assert.equal(empty.json().backup, undefined);
+    const upload = await app.inject({
+      method: "PUT", url: "/v1/backups/tasks",
+      headers: { origin, cookie: accountA.cookie, "x-csrf-token": accountA.session.csrfToken, "x-tenant-id": accountB.session.tenant.id },
+      payload: { envelope, expectedVersion: 0 },
+    });
+    assert.equal(upload.statusCode, 200);
+    assert.equal(upload.json().version, 1);
+    assert.equal(upload.json().taskCount, 3);
+    assert.equal("envelope" in upload.json(), false);
+    const isolated = await app.inject({ method: "GET", url: "/v1/backups/tasks", headers: { cookie: accountB.cookie } });
+    assert.equal(isolated.json().backup, undefined);
+    const download = await app.inject({ method: "GET", url: "/v1/backups/tasks/download", headers: { cookie: accountA.cookie } });
+    assert.equal(download.statusCode, 200);
+    assert.deepEqual(download.json().envelope, envelope);
+    const stale = await app.inject({
+      method: "PUT", url: "/v1/backups/tasks",
+      headers: { origin, cookie: accountA.cookie, "x-csrf-token": accountA.session.csrfToken },
+      payload: { envelope, expectedVersion: 0 },
+    });
+    assert.equal(stale.statusCode, 409);
+    assert.equal("envelope" in stale.json().current, false);
+    const noCsrf = await app.inject({ method: "DELETE", url: "/v1/backups/tasks", headers: { origin, cookie: accountA.cookie } });
+    assert.equal(noCsrf.statusCode, 403);
+    const removed = await app.inject({
+      method: "DELETE", url: "/v1/backups/tasks",
+      headers: { origin, cookie: accountA.cookie, "x-csrf-token": accountA.session.csrfToken },
+    });
+    assert.equal(removed.statusCode, 204);
   } finally {
     await app.close();
   }

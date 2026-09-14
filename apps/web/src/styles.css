@@ -643,6 +643,26 @@ kbd { padding: 2px 6px; color: #aeb1b8; background: #2e3036; border: 0; border-r
 .cloud-member-actions { display: flex; align-items: center; gap: 5px; }
 .cloud-member-actions select { width: 78px; height: 30px; }
 .cloud-team-row > button.danger-icon, .cloud-member-actions .danger-icon { width: 30px; min-height: 30px; padding: 0; color: #a33d47; background: white; border-color: #e1c6ca; }
+.cloud-backup-shell { display: grid; gap: 11px; padding: 14px; background: #fafbff; border: 1px solid #d9dff1; border-radius: 9px; }
+.cloud-backup-heading { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: center; }
+.cloud-backup-heading > span { width: 28px; height: 28px; display: grid; place-items: center; color: #435da8; background: #e9edfb; border-radius: 7px; }
+.cloud-backup-heading h4, .cloud-backup-heading p { margin: 0; }
+.cloud-backup-heading h4 { font-size: 12px; }
+.cloud-backup-heading p { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.cloud-backup-heading > button { width: 30px; min-height: 30px; display: grid; place-items: center; padding: 0; color: #a33d47; background: white; border: 1px solid #e1c6ca; border-radius: 7px; cursor: pointer; }
+.cloud-backup-warning { display: flex; align-items: flex-start; gap: 7px; padding: 9px 10px; color: #70541c; background: #fff8e8; border: 1px solid #ead39d; border-radius: 7px; font-size: 9px; line-height: 1.5; }
+.cloud-backup-warning svg { flex: none; margin-top: 1px; }
+.cloud-backup-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.cloud-backup-actions > form { min-width: 0; display: grid; gap: 7px; padding: 11px; background: white; border: 1px solid var(--line); border-radius: 8px; }
+.cloud-backup-actions strong, .cloud-backup-actions p { margin: 0; }
+.cloud-backup-actions strong { font-size: 11px; }
+.cloud-backup-actions p { min-height: 30px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.cloud-backup-actions label { color: #454b56; font-size: 9px; font-weight: 650; }
+.cloud-backup-actions input { width: 100%; height: 34px; padding: 0 9px; color: var(--ink); background: white; border: 1px solid var(--line-strong); border-radius: 7px; outline: 0; font-size: 10px; }
+.cloud-backup-actions input:focus-visible { border-color: #7993f7; box-shadow: 0 0 0 3px rgba(49,92,244,.1); }
+.cloud-backup-actions button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 11px; color: white; background: var(--blue); border: 1px solid var(--blue); border-radius: 7px; cursor: pointer; font-size: 10px; }
+.cloud-backup-shell button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.cloud-backup-shell button:disabled, .cloud-backup-shell input:disabled { opacity: .5; cursor: default; }
 .cloud-privacy-note { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; color: #285a40; background: #f1f9f4; border: 1px solid #c9e3d2; border-radius: 8px; }
 .cloud-privacy-note svg { flex: none; margin-top: 1px; }
 .cloud-privacy-note span { display: grid; gap: 3px; }
@@ -1016,4 +1036,6 @@ body { background: var(--canvas); font-size: 13px; }
   .cloud-team-subheading small { text-align: left; }
   .cloud-team-row { grid-template-columns: 30px minmax(0, 1fr); }
   .cloud-team-row > button, .cloud-team-row > .cloud-member-actions, .cloud-team-row > .cloud-role-pill { grid-column: 2; justify-self: start; }
+  .cloud-backup-heading { grid-template-columns: 30px minmax(0, 1fr) auto; }
+  .cloud-backup-actions { grid-template-columns: minmax(0, 1fr); }
 }

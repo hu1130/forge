@@ -76,3 +76,27 @@ test("a middle turn can be reverted without removing later independent changes",
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("portable backup diffs stay read-only while later local changes remain actionable", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "forge-portable-diff-"));
+  try {
+    const { applyTaskChanges } = await import(`${changeManagerUrl}?portable=${Date.now()}`);
+    const portablePatch = patch.replaceAll("example.txt", "restored.txt");
+    const localPatch = patch.replaceAll("example.txt", "local.txt");
+    const task = {
+      id: "task-portable", tenantId: "local", userId: "local", title: "portable", subtitle: "",
+      workspacePath: workspace, state: "completed", updatedAt: new Date().toISOString(),
+      activities: [
+        { id: "portable", kind: "files", portableOnly: true, files: [{ path: "restored.txt", additions: 1, deletions: 1, diff: portablePatch }], at: new Date().toISOString() },
+        { id: "local", kind: "files", files: [{ path: "local.txt", additions: 1, deletions: 1, diff: localPatch }], at: new Date().toISOString() },
+      ],
+    };
+    await writeFile(path.join(workspace, "restored.txt"), "after\n", "utf8");
+    await writeFile(path.join(workspace, "local.txt"), "after\n", "utf8");
+    assert.deepEqual(await applyTaskChanges(task, "revert"), ["local"]);
+    assert.equal(await readFile(path.join(workspace, "restored.txt"), "utf8"), "after\n");
+    assert.equal(await readFile(path.join(workspace, "local.txt"), "utf8"), "before\n");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

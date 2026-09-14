@@ -160,7 +160,7 @@ function ForgeTurn({ turn, state, checkpointBusy, onCheckpoint }: {
             <span className={`turn-state state-${state}`}>{state === "running" ? <LoaderCircle className="spin" size={13} /> : state === "failed" ? <AlertCircle size={13} /> : <Check size={13} />}{stateLabel}</span>
             {operationCount > 0 && <span>{operationCount} 项操作</span>}
             {fileCount > 0 && <span>{fileCount} 个文件</span>}
-            {checkpoint && <button className={`checkpoint-action ${checkpoint.revertedAt ? "is-reverted" : ""}`} type="button" disabled={checkpointBusy || state === "running"} onClick={() => onCheckpoint(checkpoint, checkpoint.revertedAt ? "reapply" : "revert")}>
+            {checkpoint && <button className={`checkpoint-action ${checkpoint.revertedAt ? "is-reverted" : ""}`} type="button" disabled={Boolean(checkpoint.portableOnly) || checkpointBusy || state === "running"} title={checkpoint.portableOnly ? "备份恢复的代码变更仅供查看" : undefined} onClick={() => onCheckpoint(checkpoint, checkpoint.revertedAt ? "reapply" : "revert")}>
               {checkpointBusy ? <LoaderCircle className="spin" size={12} /> : checkpoint.revertedAt ? <Redo2 size={12} /> : <Undo2 size={12} />}
               {checkpoint.revertedAt ? "重新应用本轮" : "撤销本轮"}
             </button>}
@@ -334,8 +334,9 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
   }, [searchQuery, viewTasks]);
   const taskChangedFiles = useMemo(() => changedFiles(selectedTask), [selectedTask]);
   const taskFileActivities = useMemo(() => selectedTask?.activities.filter((activity): activity is Extract<Activity, { kind: "files" }> => activity.kind === "files") || [], [selectedTask]);
-  const appliedFileActivityCount = taskFileActivities.filter((activity) => !activity.revertedAt).length;
-  const revertedFileActivityCount = taskFileActivities.filter((activity) => Boolean(activity.revertedAt)).length;
+  const actionableFileActivities = taskFileActivities.filter((activity) => !activity.portableOnly);
+  const appliedFileActivityCount = actionableFileActivities.filter((activity) => !activity.revertedAt).length;
+  const revertedFileActivityCount = actionableFileActivities.filter((activity) => Boolean(activity.revertedAt)).length;
   const changeTotals = useMemo(() => taskChangedFiles.reduce((totals, file) => ({
     additions: totals.additions + file.additions,
     deletions: totals.deletions + file.deletions,
@@ -892,7 +893,7 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
 
       <main className="workspace-main">
         <header className="task-header">
-          <div><h1>{selectedTask?.title || "新任务"}</h1><p>{selectedTask?.state === "running" ? "正在处理" : selectedTask?.state === "stopped" ? "已停止" : selectedTask?.state === "failed" ? "执行失败" : "本机任务"}<span>·</span>{selectedProvider?.mode === "demo" ? "显式演示流" : selectedProvider?.label}</p></div>
+          <div><h1>{selectedTask?.title || "新任务"}</h1><p>{selectedTask?.restoredFrom ? "云备份恢复记录" : selectedTask?.state === "running" ? "正在处理" : selectedTask?.state === "stopped" ? "已停止" : selectedTask?.state === "failed" ? "执行失败" : "本机任务"}<span>·</span>{selectedProvider?.mode === "demo" ? "显式演示流" : selectedProvider?.label}</p></div>
           <div className="task-actions">
             <button className={`icon-button ${selectedTask?.pinned ? "active" : ""}`} type="button" aria-label={selectedTask?.pinned ? "取消置顶任务" : "置顶任务"} disabled={!selectedTask} onClick={() => selectedTask && void updateSelectedTask({ pinned: !selectedTask.pinned })}><Pin size={16} /></button>
             <div className="task-menu-wrap">
@@ -958,7 +959,7 @@ function WorkspaceApp({ cloudSession, cloudApiBase, onCloudLogout }: { cloudSess
           <button className="inspector-close" type="button" aria-label="关闭检查器" onClick={() => setInspectorOpen(false)}><X size={15} /></button>
         </div>
         {inspectorTab === "changes" ? <>
-          <div className="change-toolbar"><span>{taskChangedFiles.length} 个文件</span><em className="add">+{changeTotals.additions}</em><em className="delete">−{changeTotals.deletions}</em><span className={`change-applied ${appliedFileActivityCount === 0 && revertedFileActivityCount > 0 ? "is-reverted" : ""}`}>{appliedFileActivityCount > 0 ? "工作区已应用" : revertedFileActivityCount > 0 ? "变更已撤销" : "暂无变更"}</span>{appliedFileActivityCount > 0 ? <button className="change-action" type="button" disabled={changeBusy || selectedTask?.state === "running"} onClick={() => void updateTaskChanges("revert")}>{changeBusy ? <LoaderCircle className="spin" size={13} /> : <Undo2 size={13} />}撤销</button> : revertedFileActivityCount > 0 ? <button className="change-action" type="button" disabled={changeBusy || selectedTask?.state === "running"} onClick={() => void updateTaskChanges("reapply")}>{changeBusy ? <LoaderCircle className="spin" size={13} /> : <Redo2 size={13} />}重新应用</button> : null}</div>
+          <div className="change-toolbar"><span>{taskChangedFiles.length} 个文件</span><em className="add">+{changeTotals.additions}</em><em className="delete">−{changeTotals.deletions}</em><span className={`change-applied ${appliedFileActivityCount === 0 && revertedFileActivityCount > 0 ? "is-reverted" : ""}`}>{appliedFileActivityCount > 0 ? "工作区已应用" : revertedFileActivityCount > 0 ? "变更已撤销" : selectedTask?.restoredFrom && taskFileActivities.length > 0 ? "备份记录仅供查看" : "暂无变更"}</span>{appliedFileActivityCount > 0 ? <button className="change-action" type="button" disabled={changeBusy || selectedTask?.state === "running"} onClick={() => void updateTaskChanges("revert")}>{changeBusy ? <LoaderCircle className="spin" size={13} /> : <Undo2 size={13} />}撤销</button> : revertedFileActivityCount > 0 ? <button className="change-action" type="button" disabled={changeBusy || selectedTask?.state === "running"} onClick={() => void updateTaskChanges("reapply")}>{changeBusy ? <LoaderCircle className="spin" size={13} /> : <Redo2 size={13} />}重新应用</button> : null}</div>
           <DiffPanel files={taskChangedFiles} />
         </> : inspectorTab === "git" ? <Suspense fallback={<div className="terminal-loading"><LoaderCircle className="spin" size={16} />正在加载 Git…</div>}><GitPanel status={bootstrap.git} taskRunning={Boolean(selectedTask?.state === "running")} onStatus={updateGitStatus} /></Suspense> : <Suspense fallback={<div className="terminal-loading"><LoaderCircle className="spin" size={16} />正在加载终端…</div>}><TerminalPanel workspacePath={bootstrap.workspace.path} /></Suspense>}
         <div className="inspector-bottom">

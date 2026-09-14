@@ -5,6 +5,7 @@ import type {
   CloudTenantResourcesPayload, ExtensionCatalogEntry, ExtensionCatalogMetadata, ExtensionSyncSnapshot,
   ForgeTask, LocalProfileImportResult, LocalProfileSummary, TaskSyncSnapshot,
 } from "@forge/contracts";
+import CloudBackupPanel from "./CloudBackupPanel";
 import CloudTeamPanel from "./CloudTeamPanel";
 
 type AuthenticatedSession = Extract<CloudAuthSession, { authenticated: true }>;
@@ -487,7 +488,15 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
 
     <CloudTeamPanel session={props.session} cloudApiBase={props.cloudApiBase} anyTaskRunning={props.anyTaskRunning} />
 
-    <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>只同步安全目录元数据</strong><small>任务目录和市场扩展的 ID、版本、作用域及启用状态可以进入 Cloud；代码、Skill 内容、MCP 命令、地址、参数、环境变量、Token 与本机路径不会上传。</small></span></div>
+    <div className="cloud-privacy-note"><ShieldCheck size={16} /><span><strong>目录同步与加密备份彼此独立</strong><small>普通同步只上传任务和市场扩展的安全目录元数据。只有你主动创建端到端加密备份时，任务历史才会以密文上传；工作区文件、Skill/MCP 配置、Token 与本机路径仍不会上传。</small></span></div>
+
+    <CloudBackupPanel
+      tenantId={props.session.tenant.id}
+      cloudApiBase={props.cloudApiBase}
+      csrfToken={props.session.csrfToken}
+      anyTaskRunning={props.anyTaskRunning}
+      onTasksChanged={props.onTasksChanged}
+    />
 
     <div className="cloud-action-grid">
       <section>
@@ -524,7 +533,7 @@ export default function CloudWorkspacePanel(props: CloudWorkspacePanelProps) {
 
     {props.anyTaskRunning && <div className="cloud-sync-warning"><AlertTriangle size={15} />请先停止正在运行的任务，再导入或同步目录。</div>}
     {(error || message) && <div className={`settings-feedback ${error ? "feedback-error" : "feedback-success"}`} role={error ? "alert" : "status"}>{error || message}</div>}
-    {cloudOnlyCount > 0 && <div className="cloud-sync-warning"><Cloud size={15} />云端还有 {cloudOnlyCount} 个仅存在于其他设备的目录记录。由于完整任务没有上传，本机不会创建虚假的空任务。</div>}
+    {cloudOnlyCount > 0 && <div className="cloud-sync-warning"><Cloud size={15} />云端还有 {cloudOnlyCount} 个仅存在于其他设备的目录记录。目录同步不会创建虚假的空任务；如需任务历史，请使用加密备份恢复。</div>}
     {cloudOnlyExtensionCount > 0 && <div className="cloud-sync-warning"><PlugZap size={15} />云端还有 {cloudOnlyExtensionCount} 个仅存在于其他设备的扩展目录。请在扩展市场安装对应版本后再同步，Forge 不会下载未知代码或命令。</div>}
     {(excludedExtensions.customSkills > 0 || excludedExtensions.customMcpServers > 0) && <div className="cloud-sync-warning"><ShieldCheck size={15} />本次已排除 {excludedExtensions.customSkills} 个自定义 Skill 和 {excludedExtensions.customMcpServers} 个自定义 MCP；它们的内容与配置只保存在本机。</div>}
 

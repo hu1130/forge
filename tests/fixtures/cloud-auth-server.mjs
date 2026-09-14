@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createCloudApi } from "../../apps/cloud-api/dist/app.js";
 import { DuplicateEmailError } from "../../apps/cloud-api/dist/auth-service.js";
+import { EncryptedBackupVersionConflictError } from "../../apps/cloud-api/dist/encrypted-backups.js";
 import { TenantVersionConflictError } from "../../apps/cloud-api/dist/tenant-resources.js";
 
 class QaAuthStore {
@@ -151,12 +152,45 @@ class QaTenantStore {
   }
 }
 
+class QaBackupStore {
+  backups = new Map();
+
+  async getTaskBackup(principal) {
+    return this.backups.get(`${principal.tenantId}:${principal.userId}`);
+  }
+
+  async upsertTaskBackup(principal, input) {
+    const key = `${principal.tenantId}:${principal.userId}`;
+    const existing = this.backups.get(key);
+    if (input.expectedVersion !== undefined
+      && ((!existing && input.expectedVersion !== 0) || (existing && existing.version !== input.expectedVersion))) {
+      throw new EncryptedBackupVersionConflictError(existing);
+    }
+    const stored = {
+      envelope: input.envelope,
+      version: (existing?.version || 0) + 1,
+      sizeBytes: input.sizeBytes,
+      taskCount: input.envelope.taskCount,
+      createdAt: input.envelope.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+    this.backups.set(key, stored);
+    return stored;
+  }
+
+  async deleteTaskBackup(principal) {
+    return this.backups.delete(`${principal.tenantId}:${principal.userId}`);
+  }
+}
+
 const store = new QaAuthStore();
 const tenantStore = new QaTenantStore();
+const backupStore = new QaBackupStore();
 const app = await createCloudApi({
   store,
   tenantStore,
   teamStore: store,
+  backupStore,
   allowedOrigins: ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"],
   cookieSecure: false,
 });

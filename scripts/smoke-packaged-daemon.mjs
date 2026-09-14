@@ -15,6 +15,8 @@ const child = spawn(path.join(unpacked, "Forge.exe"), [path.join(unpacked, "reso
     FORGE_DATA_DIR: path.join(os.tmpdir(), "forge-packaged-daemon-smoke"),
     FORGE_WEB_ROOT: path.join(unpacked, "resources", "web"),
     FORGE_WORKSPACE: root,
+    FORGE_TENANT_ID: "11111111-1111-4111-8111-111111111111",
+    FORGE_USER_ID: "22222222-2222-4222-8222-222222222222",
     FORGE_CODEX_BIN: path.join(unpacked, "resources", "codex", "codex.exe"),
     DEEPSEEK_API_KEY: "",
   },
@@ -27,6 +29,7 @@ child.stderr.on("data", (chunk) => { errorOutput += String(chunk); });
 let ready = false;
 let gitReady = false;
 let contextFilesReady = false;
+let encryptedBackupReady = false;
 try {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (child.exitCode !== null) break;
@@ -46,6 +49,28 @@ try {
           contextFilesReady = filesResponse.ok
             && files.files?.some((file) => file.path === "apps/daemon/src/workspace-files.ts")
             && !files.files?.some((file) => file.path.includes("node_modules"));
+          const taskResponse = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ title: "安装包加密备份验收" }),
+          });
+          const backupResponse = await fetch(`http://127.0.0.1:${port}/api/cloud-backup/tasks/encrypt`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ passphrase: "Forge 安装包备份验收口令 2026" }),
+          });
+          const backup = await backupResponse.json();
+          const restoreResponse = await fetch(`http://127.0.0.1:${port}/api/cloud-backup/tasks/restore`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ passphrase: "Forge 安装包备份验收口令 2026", envelope: backup.envelope }),
+          });
+          const restore = await restoreResponse.json();
+          encryptedBackupReady = taskResponse.ok
+            && backupResponse.ok
+            && backup.envelope?.encryption === "aes-256-gcm"
+            && restoreResponse.ok
+            && Number.isInteger(restore.skipped);
         }
         break;
       }
@@ -62,4 +87,5 @@ if (!ready) {
 }
 if (!gitReady) throw new Error("Packaged daemon did not expose real Git status in bootstrap");
 if (!contextFilesReady) throw new Error("Packaged daemon did not expose safe workspace file search");
+if (!encryptedBackupReady) throw new Error("Packaged daemon did not encrypt and restore a cloud task backup");
 console.log("Packaged daemon smoke: ready");

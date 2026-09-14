@@ -3,9 +3,10 @@ import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
-  Activity, CloudTaskMetadata, ForgeIdentityContext, ForgeTask, LocalProfileImportResult,
-  LocalProfileSummary, QueuedTurn, TaskSyncReceipt, TaskSyncSnapshot,
+  Activity, CloudTaskMetadata, EncryptedTaskBackupEnvelope, ForgeIdentityContext, ForgeTask, LocalProfileImportResult,
+  LocalProfileSummary, QueuedTurn, TaskBackupCreateResult, TaskBackupRestoreResult, TaskSyncReceipt, TaskSyncSnapshot,
 } from "@forge/contracts";
+import { createEncryptedTaskBackup, decryptTaskBackup } from "./task-backup.js";
 
 interface PersistedState {
   schemaVersion: number;
@@ -222,6 +223,55 @@ export class TaskStore {
     await this.persist();
     const summary = this.summarizeLocalProfile(local);
     return { imported: importedTasks.length, skipped: summary.alreadyImported, tasks: this.list(), summary };
+  }
+
+  async createEncryptedBackup(passphrase: string): Promise<TaskBackupCreateResult> {
+    return await createEncryptedTaskBackup(this.list(), this.identity, passphrase);
+  }
+
+  async restoreEncryptedBackup(envelope: EncryptedTaskBackupEnvelope, passphrase: string): Promise<TaskBackupRestoreResult> {
+    const backup = await decryptTaskBackup(envelope, this.identity, passphrase);
+    const restoredAt = now();
+    const restoredTasks: ForgeTask[] = [];
+    let skipped = 0;
+    for (const source of backup.tasks) {
+      const originalStillExists = this.state.tasks.some((task) => task.id === source.sourceTaskId);
+      const restoredVersionExists = this.state.tasks.some((task) => task.restoredFrom?.taskId === source.sourceTaskId
+        && task.restoredFrom.taskUpdatedAt >= source.updatedAt);
+      if (originalStillExists || restoredVersionExists) {
+        skipped += 1;
+        continue;
+      }
+      restoredTasks.push({
+        id: randomUUID(),
+        tenantId: this.identity.tenantId,
+        userId: this.identity.userId,
+        title: source.title,
+        subtitle: "从加密云备份恢复",
+        workspacePath: this.state.workspacePath,
+        pinned: source.pinned,
+        archived: source.archived,
+        state: source.state,
+        activities: [
+          ...source.activities.map((activity): Activity => activity.kind === "files" ? { ...activity, portableOnly: true } : activity),
+          {
+            id: randomUUID(),
+            kind: "notice",
+            tone: "info",
+            text: "此任务由端到端加密云备份恢复。旧 Agent 会话、等待队列和原设备工作区路径未恢复，代码变更记录仅供查看。",
+            at: restoredAt,
+          },
+        ],
+        queuedTurns: [],
+        restoredFrom: { backupId: backup.backupId, taskId: source.sourceTaskId, taskUpdatedAt: source.updatedAt, restoredAt },
+        updatedAt: restoredAt,
+      });
+    }
+    if (restoredTasks.length) {
+      this.state.tasks.unshift(...restoredTasks);
+      await this.persist();
+    }
+    return { imported: restoredTasks.length, skipped, tasks: this.list() };
   }
 
   taskSyncSnapshot(): TaskSyncSnapshot {

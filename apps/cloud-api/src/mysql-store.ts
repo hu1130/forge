@@ -3,7 +3,7 @@ import path from "node:path";
 import { createPool, type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
 import type {
   CloudPendingInvitation, CloudTeamOverview, CloudTenantContext, CloudTenantInvitation,
-  CloudTenantMember, CloudTenantResource, CloudTenantResourceKind,
+  CloudTenantMember, CloudTenantResource, CloudTenantResourceKind, EncryptedTaskBackupEnvelope,
 } from "@forge/contracts";
 import {
   DuplicateEmailError, type AuthActionPurpose, type AuthStore, type StoredSession,
@@ -14,6 +14,9 @@ import {
   TeamAccessError, TeamConflictError, TeamNotFoundError, type InvitationRole, type TeamActor,
   type TeamRole, type TeamStore,
 } from "./team-service.js";
+import {
+  backupMetadata, EncryptedBackupVersionConflictError, type EncryptedBackupStore, type StoredEncryptedTaskBackup,
+} from "./encrypted-backups.js";
 
 interface SessionRow extends RowDataPacket {
   session_id: string;
@@ -50,6 +53,15 @@ interface TenantResourceRow extends RowDataPacket {
   payload: Record<string, unknown> | string;
   version: string | number;
   created_at: Date;
+  updated_at: Date;
+}
+
+interface EncryptedBackupRow extends RowDataPacket {
+  encrypted_payload: string;
+  size_bytes: number;
+  task_count: number;
+  version: string | number;
+  backup_created_at: Date;
   updated_at: Date;
 }
 
@@ -101,6 +113,17 @@ function mapTenantResource(row: TenantResourceRow): CloudTenantResource {
   };
 }
 
+function mapEncryptedBackup(row: EncryptedBackupRow): StoredEncryptedTaskBackup {
+  return {
+    envelope: JSON.parse(row.encrypted_payload) as EncryptedTaskBackupEnvelope,
+    version: Number(row.version),
+    sizeBytes: Number(row.size_bytes),
+    taskCount: Number(row.task_count),
+    createdAt: row.backup_created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
 function mapInvitation(row: InvitationRow): CloudTenantInvitation {
   return {
     id: row.id,
@@ -143,6 +166,7 @@ const SESSION_QUERY = `
 `;
 
 const RESOURCE_COLUMNS = "kind, resource_key, owner_user_id, updated_by_user_id, payload, version, created_at, updated_at";
+const ENCRYPTED_BACKUP_COLUMNS = "encrypted_payload, size_bytes, task_count, version, backup_created_at, updated_at";
 
 export function createForgeMySqlPool(uri: string, connectionLimit: number) {
   const pool = createPool({ uri, connectionLimit, timezone: "Z" });
@@ -154,7 +178,7 @@ export function createForgeMySqlPool(uri: string, connectionLimit: number) {
   return pool;
 }
 
-export class MySqlAuthStore implements AuthStore, TenantResourceStore, TeamStore {
+export class MySqlAuthStore implements AuthStore, TenantResourceStore, TeamStore, EncryptedBackupStore {
   constructor(readonly pool: Pool) {}
 
   async createAccount(input: { userId: string; tenantId: string; email: string; displayName: string; passwordHash: string; emailVerifiedAt?: string; tenantName: string; tenantSlug: string }) {
@@ -762,6 +786,86 @@ export class MySqlAuthStore implements AuthStore, TenantResourceStore, TeamStore
       const [result] = await connection.execute<ResultSetHeader>(
         "DELETE FROM forge_tenant_resources WHERE tenant_id = ? AND kind = ? AND resource_key = ?",
         [principal.tenantId, kind, key],
+      );
+      return result.affectedRows > 0;
+    });
+  }
+
+  async getTaskBackup(principal: TenantPrincipal) {
+    return this.withTenant(principal, async (connection) => {
+      const [rows] = await connection.execute<EncryptedBackupRow[]>(`
+        SELECT ${ENCRYPTED_BACKUP_COLUMNS}
+          FROM forge_encrypted_task_backups
+         WHERE tenant_id = ? AND user_id = ?
+      `, [principal.tenantId, principal.userId]);
+      return rows[0] ? mapEncryptedBackup(rows[0]) : undefined;
+    });
+  }
+
+  async upsertTaskBackup(principal: TenantPrincipal, input: {
+    envelope: EncryptedTaskBackupEnvelope;
+    sizeBytes: number;
+    expectedVersion?: number;
+  }) {
+    return this.withTenant(principal, async (connection) => {
+      let current = await this.findTaskBackupForUpdate(connection, principal);
+      let currentBackup = current ? mapEncryptedBackup(current) : undefined;
+      const currentMetadata = currentBackup ? backupMetadata(currentBackup) : undefined;
+      if (input.expectedVersion !== undefined
+        && ((!currentBackup && input.expectedVersion !== 0) || (currentBackup && currentBackup.version !== input.expectedVersion))) {
+        throw new EncryptedBackupVersionConflictError(currentMetadata);
+      }
+      const encryptedPayload = JSON.stringify(input.envelope);
+      if (!currentBackup) {
+        try {
+          await connection.execute(`
+            INSERT INTO forge_encrypted_task_backups
+              (tenant_id, user_id, encrypted_payload, size_bytes, task_count, backup_created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `, [
+            principal.tenantId, principal.userId, encryptedPayload, input.sizeBytes,
+            input.envelope.taskCount, new Date(input.envelope.createdAt),
+          ]);
+          current = await this.findTaskBackupForUpdate(connection, principal);
+          if (!current) throw new Error("创建加密任务备份后无法读取");
+          return mapEncryptedBackup(current);
+        } catch (error) {
+          if (!(typeof error === "object" && error && "code" in error && error.code === "ER_DUP_ENTRY")) throw error;
+          current = await this.findTaskBackupForUpdate(connection, principal);
+          currentBackup = current ? mapEncryptedBackup(current) : undefined;
+          throw new EncryptedBackupVersionConflictError(currentBackup ? backupMetadata(currentBackup) : undefined);
+        }
+      }
+      await connection.execute(`
+        UPDATE forge_encrypted_task_backups
+           SET encrypted_payload = ?, size_bytes = ?, task_count = ?, backup_created_at = ?,
+               version = version + 1, updated_at = CURRENT_TIMESTAMP(3)
+         WHERE tenant_id = ? AND user_id = ?
+      `, [
+        encryptedPayload, input.sizeBytes, input.envelope.taskCount, new Date(input.envelope.createdAt),
+        principal.tenantId, principal.userId,
+      ]);
+      const updated = await this.findTaskBackupForUpdate(connection, principal);
+      if (!updated) throw new Error("更新加密任务备份后无法读取");
+      return mapEncryptedBackup(updated);
+    });
+  }
+
+  private async findTaskBackupForUpdate(connection: PoolConnection, principal: TenantPrincipal) {
+    const [rows] = await connection.execute<EncryptedBackupRow[]>(`
+      SELECT ${ENCRYPTED_BACKUP_COLUMNS}
+        FROM forge_encrypted_task_backups
+       WHERE tenant_id = ? AND user_id = ?
+       FOR UPDATE
+    `, [principal.tenantId, principal.userId]);
+    return rows[0];
+  }
+
+  async deleteTaskBackup(principal: TenantPrincipal) {
+    return this.withTenant(principal, async (connection) => {
+      const [result] = await connection.execute<ResultSetHeader>(
+        "DELETE FROM forge_encrypted_task_backups WHERE tenant_id = ? AND user_id = ?",
+        [principal.tenantId, principal.userId],
       );
       return result.affectedRows > 0;
     });

@@ -28,7 +28,7 @@ function runGitApply(workspacePath: string, patch: string, action: ChangeAction,
 }
 
 function candidateActivities(task: ForgeTask, action: ChangeAction, turnId?: string) {
-  const fileActivities = task.activities.filter((activity): activity is Extract<Activity, { kind: "files" }> => activity.kind === "files");
+  const fileActivities = task.activities.filter((activity): activity is Extract<Activity, { kind: "files" }> => activity.kind === "files" && !activity.portableOnly);
   const selected = turnId ? fileActivities.filter((activity) => activity.turnId === turnId) : fileActivities;
   const candidates = selected.filter((activity) => action === "revert" ? !activity.revertedAt : Boolean(activity.revertedAt));
   return action === "revert" ? candidates.reverse() : candidates;

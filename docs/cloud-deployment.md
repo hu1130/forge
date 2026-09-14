@@ -1,6 +1,6 @@
 # Forge Cloud 部署
 
-Forge 桌面端仍在用户电脑执行 Agent；这里只部署账户、租户和安全目录控制面。Cloud API 不应与桌面安装包共用数据库凭据。
+Forge 桌面端仍在用户电脑执行 Agent；这里只部署账户、租户、安全目录和不透明加密备份控制面。Cloud API 不应与桌面安装包共用数据库凭据，也不能接收备份口令或任务明文。
 
 ## 运行要求
 
@@ -46,8 +46,8 @@ pnpm cloud:preflight
 通过后构建和启动：
 
 ```powershell
-docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.19.0 .
-docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.19.0
+docker build -f apps/cloud-api/Dockerfile -t forge-cloud:0.20.0 .
+docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.20.0
 ```
 
 容器以非 root 用户运行，`/v1/live` 只检查进程存活，`/v1/health` 检查 Cloud API 和数据库就绪状态；每个响应都包含 `x-request-id`。生产日志会隐藏 Cookie、Authorization 和 Set-Cookie。启动时迁移进程会取得 MySQL 命名锁，并只执行尚未登记的迁移，避免多实例重复迁移。MySQL 没有原生 Row-Level Security，因此运行账号不得拥有 DDL 权限，Cloud API 的所有租户资源操作必须同时通过活动成员校验和显式 `tenant_id` 条件。
@@ -68,5 +68,6 @@ docker run --rm -p 4790:4790 --env-file .env.production forge-cloud:0.19.0
 8. 创建团队后可在个人与团队工作区之间切换，且本机 Daemon 身份与 Cloud 会话租户一致。
 9. 邀请只能由匹配且已验证的邮箱接受；管理员不能邀请管理员，最后一位所有者不能被降级或移除。
 10. 移除成员后，该成员在对应团队的旧会话立即失效，但个人工作区仍可正常登录。
+11. 两个用户在同一团队分别上传备份时互不覆盖；错误口令、其他租户密文和篡改密文均无法恢复，重复恢复不会覆盖或复制本机已有版本。
 
 仓库中的 `compose.yaml` 只用于本机开发，包含明确标注的开发密码，不能直接部署到公网。

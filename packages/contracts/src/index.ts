@@ -44,6 +44,7 @@ export type Activity =
       turnId?: string;
       files: Array<{ path: string; additions: number; deletions: number; diff?: string }>;
       revertedAt?: string;
+      portableOnly?: boolean;
       at: string;
     }
   | {
@@ -79,6 +80,7 @@ export interface ForgeTask {
     updatedAt: string;
   };
   importedFrom?: { profile: "local"; taskId: string; importedAt: string };
+  restoredFrom?: { backupId: string; taskId: string; taskUpdatedAt: string; restoredAt: string };
   updatedAt: string;
 }
 
@@ -104,6 +106,50 @@ export interface TaskSyncReceipt {
 export interface TaskSyncSnapshot {
   tasks: ForgeTask[];
   receipts: Record<string, TaskSyncReceipt>;
+}
+
+export interface EncryptedTaskBackupEnvelope {
+  format: "forge-task-backup";
+  formatVersion: 1;
+  encryption: "aes-256-gcm";
+  compression: "gzip";
+  keyDerivation: "scrypt";
+  salt: string;
+  iv: string;
+  authTag: string;
+  ciphertext: string;
+  createdAt: string;
+  taskCount: number;
+}
+
+export interface CloudTaskBackupMetadata {
+  version: number;
+  sizeBytes: number;
+  taskCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CloudTaskBackupStatusPayload {
+  tenantId: string;
+  backup?: CloudTaskBackupMetadata;
+}
+
+export interface CloudTaskBackupDownloadPayload extends CloudTaskBackupMetadata {
+  tenantId: string;
+  envelope: EncryptedTaskBackupEnvelope;
+}
+
+export interface TaskBackupCreateResult {
+  envelope: EncryptedTaskBackupEnvelope;
+  plaintextBytes: number;
+  encryptedBytes: number;
+}
+
+export interface TaskBackupRestoreResult {
+  imported: number;
+  skipped: number;
+  tasks: ForgeTask[];
 }
 
 export interface CloudTaskMetadata {

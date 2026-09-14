@@ -1,6 +1,6 @@
 # Forge
 
-Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.21 以 OpenWork 的桌面信息架构为参考重建工作台和设置中心，并加入可持久化的默认模型、审批、检查器和外观配置。本机模式仍可不登录使用。
+Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + Electron + Fastify + Codex App Server，模型只接入 DeepSeek；0.22.1 在 OpenWork 风格工作台基础上补齐品牌资源、隐私安全诊断、本机脱敏生命周期日志和发布前完整性检查。本机模式仍可不登录使用。
 
 ## 当前版本已完成
 
@@ -55,6 +55,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 - 安装版为每次本机运行生成临时 Daemon 会话令牌，未携带令牌的 API 请求会被拒绝
 - 任务记录串行原子写入并保留备份；损坏文件会隔离，意外中断的任务会在重启后安全停止
 - Electron 页面启用 CSP、渲染器沙箱、导航限制、权限默认拒绝和 IPC 来源校验
+- 本机只记录应用与 Daemon 生命周期，不记录任务、对话、命令输出或工作区内容；诊断导出最多附带最近 100 条脱敏生命周期记录
 - Windows NSIS 安装程序，内置 Forge Daemon、Web 前端和已固定验证的 Codex CLI `0.153.4`
 
 ## 安装版使用
@@ -62,7 +63,7 @@ Forge 是一款 Windows 本机 AI 编程工作台。当前版本采用 React + E
 安装包位于：
 
 ```text
-release/Forge-Setup-0.22.0.exe
+release/Forge-Setup-0.22.1.exe
 ```
 
 1. 运行安装程序并启动 Forge。
@@ -128,6 +129,8 @@ pnpm dist:win
 ```
 
 构建结果输出到 `release/`。Codex CLI 与 Codex App Server 来自 OpenAI Codex 开源项目，许可证和上游 NOTICE 位于 `apps/desktop/third-party/`，并随安装包分发。
+
+构建完成后运行 `pnpm release:verify`，检查版本一致性、安装器元数据、品牌资源、Daemon/Web/Codex 捆绑资源、许可证、SHA-256 和签名状态。内部测试包允许未签名但会显示警告；公开销售前运行 `pnpm release:verify:commercial`，未签名或未配置自动更新发布地址时会直接失败。该检查不替代在干净 Windows 虚拟机上执行安装、覆盖升级和卸载验收。
 
 ## 验证
 

@@ -1,6 +1,6 @@
 {
   "name": "@forge/desktop",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "private": true,
   "description": "Forge Windows local AI coding workspace",
   "author": "Forge",
@@ -26,6 +26,7 @@
     "files": [
       "main.cjs",
       "preload.cjs",
+      "release-support.cjs",
       "package.json"
     ],
     "extraResources": [

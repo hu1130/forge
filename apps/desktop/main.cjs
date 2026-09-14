@@ -4,6 +4,7 @@ const { spawn } = require("node:child_process");
 const { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createReleaseLogger, redactText } = require("./release-support.cjs");
 
 app.setName("Forge");
 app.setAppUserModelId("com.forge.local");
@@ -16,6 +17,11 @@ const localIdentity = { tenantId: "local", userId: "local", mode: "local" };
 let activeIdentity = localIdentity;
 let daemonProcess = null;
 let daemonFailure = "";
+let lifecycleLogger = null;
+
+function logLifecycle(event, details = {}) {
+  try { lifecycleLogger?.write(event, details); } catch { /* Logging must never prevent Forge from opening. */ }
+}
 
 function assertTrustedSender(event) {
   const senderUrl = event.senderFrame?.url || event.sender.getURL();
@@ -171,14 +177,19 @@ function startDaemon() {
   };
   for (const [name, token] of Object.entries(readMcpTokens())) daemonEnvironment[mcpTokenEnvVar(name)] = token;
   daemonFailure = "";
+  logLifecycle("daemon.starting", { identityMode: activeIdentity.mode });
   daemonProcess = spawn(process.execPath, [entry], {
     env: daemonEnvironment,
     stdio: "ignore",
     windowsHide: true,
   });
-  daemonProcess.once("error", (error) => { daemonFailure = error.message; });
+  daemonProcess.once("error", (error) => {
+    daemonFailure = error.message;
+    logLifecycle("daemon.error", { message: error.message });
+  });
   daemonProcess.once("exit", (code) => {
     if (code && !daemonFailure) daemonFailure = `Forge Daemon 已退出（${code}）`;
+    logLifecycle("daemon.exited", { code: code ?? 0, expected: !code });
     daemonProcess = null;
   });
 }
@@ -187,6 +198,7 @@ function stopDaemon() {
   const child = daemonProcess;
   daemonProcess = null;
   if (!child || child.exitCode !== null) return Promise.resolve();
+  logLifecycle("daemon.stopping");
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, 5_000);
     child.once("exit", () => {
@@ -199,6 +211,7 @@ function stopDaemon() {
 
 async function restartDaemon() {
   if (!app.isPackaged) return false;
+  logLifecycle("daemon.restart-requested");
   await stopDaemon();
   startDaemon();
   return true;
@@ -210,22 +223,22 @@ async function waitForDaemon(timeoutMs = 20_000) {
     if (daemonFailure) throw new Error(daemonFailure);
     try {
       const response = await fetch("http://127.0.0.1:4782/api/session", { headers: { authorization: `Bearer ${apiToken}` } });
-      if (response.ok && (await response.json()).protected === true) return;
+      if (response.ok && (await response.json()).protected === true) {
+        logLifecycle("daemon.ready", { startupMs: Date.now() - startedAt });
+        return;
+      }
     } catch {
       // The daemon is still starting.
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  logLifecycle("daemon.timeout", { timeoutMs });
   throw new Error("Forge Daemon 启动超时");
 }
 
 function redactDiagnosticText(value) {
   if (!value) return null;
-  const homePath = app.getPath("home");
-  return String(value)
-    .replaceAll(homePath, "%USERPROFILE%")
-    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "[REDACTED_API_KEY]")
-    .slice(0, 1000);
+  return redactText(value, { homePath: app.getPath("home") });
 }
 
 async function readDaemonDiagnostics() {
@@ -277,8 +290,10 @@ async function exportDiagnostics() {
       identityMode: activeIdentity.mode,
     },
     daemon: await readDaemonDiagnostics(),
+    recentLifecycle: lifecycleLogger?.recent(100) || [],
   };
   writeFileSync(result.filePath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  logLifecycle("diagnostics.exported", { entries: payload.recentLifecycle.length });
   return { saved: true };
 }
 
@@ -315,11 +330,14 @@ async function switchIdentity(nextIdentity) {
   }
   const previousIdentity = activeIdentity;
   activeIdentity = nextIdentity;
+  logLifecycle("identity.switching", { fromMode: previousIdentity.mode, toMode: nextIdentity.mode });
   try {
     const restarted = await restartDaemon();
     if (restarted) await waitForDaemon();
+    logLifecycle("identity.switched", { identityMode: activeIdentity.mode });
     return { identity: activeIdentity, restarted };
   } catch (error) {
+    logLifecycle("identity.switch-failed", { message: error instanceof Error ? error.message : String(error) });
     activeIdentity = previousIdentity;
     await restartDaemon().then(async (restarted) => { if (restarted) await waitForDaemon(); }).catch(() => undefined);
     throw error;
@@ -327,6 +345,7 @@ async function switchIdentity(nextIdentity) {
 }
 
 function createWindow() {
+  logLifecycle("window.creating");
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -379,6 +398,13 @@ function createWindow() {
 }
 
 async function initializeApp() {
+  try {
+    lifecycleLogger = createReleaseLogger({
+      logDir: path.join(app.getPath("userData"), "logs"),
+      homePath: app.getPath("home"),
+    });
+    logLifecycle("app.initializing", { version: app.getVersion(), packaged: app.isPackaged });
+  } catch { /* Diagnostics logging is best-effort. */ }
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   await session.defaultSession.cookies.set({ url: webUrl, name: "forge_session", value: apiToken, httpOnly: true, sameSite: "strict", path: "/" });
 
@@ -469,7 +495,10 @@ if (!singleInstance) {
   app.whenReady().then(initializeApp);
 }
 
-app.on("before-quit", () => { void stopDaemon(); });
+app.on("before-quit", () => {
+  logLifecycle("app.quitting");
+  void stopDaemon();
+});
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
